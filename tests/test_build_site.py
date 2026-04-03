@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import argparse
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import yaml
 
 from tools import build_site
 
@@ -32,7 +37,149 @@ def make_deb(root: Path, package: str, version: str) -> Path:
     return deb_path
 
 
+def completed(stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr=stderr)
+
+
+def archive_config() -> dict[str, str]:
+    return {
+        "suite": "stable",
+        "component": "main",
+        "origin": "SafeLibs",
+        "label": "SafeLibs",
+        "description": "Test repo",
+        "homepage": "https://example.invalid/project",
+        "base_url": "https://example.invalid/repo/",
+        "key_name": "safelibs",
+        "image": "debian:trixie-slim",
+    }
+
+
+def repo_config(name: str = "demo") -> dict[str, object]:
+    return {
+        "name": name,
+        "github_repo": f"safelibs/port-{name}",
+        "ref": f"refs/tags/{name}/04-test",
+        "build": {
+            "workdir": ".",
+            "command": "./build.sh",
+            "artifact_globs": ["*.deb"],
+        },
+    }
+
+
 class BuildSiteTests(unittest.TestCase):
+    def test_run_wraps_subprocess_failures(self) -> None:
+        error = subprocess.CalledProcessError(
+            returncode=2,
+            cmd=["git", "status"],
+            output="stdout line\n",
+            stderr="stderr line\n",
+        )
+        with mock.patch("tools.build_site.subprocess.run", side_effect=error):
+            with self.assertRaises(build_site.BuildError) as ctx:
+                build_site.run(["git", "status"], cwd=Path("/tmp/test-run"))
+
+        message = str(ctx.exception)
+        self.assertIn("git status failed", message)
+        self.assertIn("cwd=/tmp/test-run", message)
+        self.assertIn("stdout line", message)
+        self.assertIn("stderr line", message)
+
+    def test_load_config_rejects_non_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            config_path.write_text("- not-a-mapping\n")
+            with self.assertRaisesRegex(build_site.BuildError, "must contain a YAML mapping"):
+                build_site.load_config(config_path)
+
+    def test_load_config_requires_archive_and_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            config_path.write_text(yaml.safe_dump({"archive": archive_config()}))
+            with self.assertRaisesRegex(
+                build_site.BuildError, "must define archive and repositories"
+            ):
+                build_site.load_config(config_path)
+
+    def test_load_config_validates_repository_build_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "archive": archive_config(),
+                        "repositories": [
+                            {
+                                "name": "broken",
+                                "github_repo": "safelibs/port-broken",
+                                "ref": "refs/tags/broken/04-test",
+                                "build": {"artifact_globs": ["*.deb"]},
+                            }
+                        ],
+                    }
+                )
+            )
+            with self.assertRaisesRegex(
+                build_site.BuildError, "docker build must define command"
+            ):
+                build_site.load_config(config_path)
+
+    def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target_dir = Path(tmp) / "repo"
+            target_dir.mkdir()
+            with mock.patch("tools.build_site.run") as run_mock:
+                build_site.clone_or_update_repo("safelibs/port-demo", target_dir)
+
+        self.assertEqual(
+            [call.args[0] for call in run_mock.call_args_list],
+            [
+                ["git", "-C", str(target_dir), "reset", "--hard", "HEAD"],
+                ["git", "-C", str(target_dir), "clean", "-fdx"],
+                ["git", "-C", str(target_dir), "fetch", "--tags", "--prune", "origin"],
+            ],
+        )
+
+    def test_clone_or_update_repo_clones_with_gh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target_dir = Path(tmp) / "repo"
+            with (
+                mock.patch("tools.build_site.shutil.which", return_value="/usr/bin/gh"),
+                mock.patch("tools.build_site.run") as run_mock,
+            ):
+                build_site.clone_or_update_repo("safelibs/port-demo", target_dir)
+
+        run_mock.assert_called_once_with(
+            ["gh", "repo", "clone", "safelibs/port-demo", str(target_dir), "--", "--filter=blob:none"]
+        )
+
+    def test_clone_or_update_repo_requires_gh_for_new_repos(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target_dir = Path(tmp) / "repo"
+            with mock.patch("tools.build_site.shutil.which", return_value=None):
+                with self.assertRaisesRegex(
+                    build_site.BuildError, "gh is required to clone private safelibs repositories"
+                ):
+                    build_site.clone_or_update_repo("safelibs/port-demo", target_dir)
+
+    def test_sync_repo_checks_out_requested_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source_root = Path(tmp)
+            entry = repo_config("alpha")
+            target_dir = source_root / "alpha"
+            with (
+                mock.patch("tools.build_site.clone_or_update_repo") as clone_mock,
+                mock.patch("tools.build_site.run") as run_mock,
+            ):
+                result = build_site.sync_repo(entry, source_root)
+
+        clone_mock.assert_called_once_with("safelibs/port-alpha", target_dir)
+        run_mock.assert_called_once_with(
+            ["git", "-C", str(target_dir), "checkout", "--detach", "refs/tags/alpha/04-test"]
+        )
+        self.assertEqual(result, target_dir)
+
     def test_build_repo_checkout_artifacts_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -60,6 +207,217 @@ class BuildSiteTests(unittest.TestCase):
             self.assertEqual([path.name for path in artifacts], [deb_path.name])
             self.assertTrue((artifact_root / "libgamma" / deb_path.name).exists())
 
+    def test_build_repo_checkout_artifacts_mode_requires_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            artifact_root = tmp_path / "artifacts"
+            source_dir.mkdir()
+            artifact_root.mkdir()
+
+            with self.assertRaisesRegex(build_site.BuildError, "no checked-in artifacts found"):
+                build_site.build_repo(
+                    {
+                        "name": "libgamma",
+                        "build": {
+                            "mode": "checkout-artifacts",
+                            "workdir": ".",
+                            "artifact_globs": ["*.deb"],
+                        },
+                    },
+                    source_dir,
+                    artifact_root,
+                    "debian:trixie-slim",
+                    [],
+                )
+
+    def test_build_repo_rejects_missing_workdir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            artifact_root = tmp_path / "artifacts"
+            source_dir.mkdir()
+            artifact_root.mkdir()
+
+            with self.assertRaisesRegex(build_site.BuildError, "missing workdir"):
+                build_site.build_repo(
+                    {
+                        "name": "demo",
+                        "build": {
+                            "workdir": "missing",
+                            "command": "./build.sh",
+                            "artifact_globs": ["*.deb"],
+                        },
+                    },
+                    source_dir,
+                    artifact_root,
+                    "debian:trixie-slim",
+                    [],
+                )
+
+    def test_build_repo_rejects_unsupported_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            artifact_root = tmp_path / "artifacts"
+            source_dir.mkdir()
+            artifact_root.mkdir()
+
+            with self.assertRaisesRegex(build_site.BuildError, "unsupported build mode"):
+                build_site.build_repo(
+                    {
+                        "name": "demo",
+                        "build": {
+                            "mode": "host-shell",
+                            "workdir": ".",
+                            "command": "./build.sh",
+                            "artifact_globs": ["*.deb"],
+                        },
+                    },
+                    source_dir,
+                    artifact_root,
+                    "debian:trixie-slim",
+                    [],
+                )
+
+    def test_build_repo_docker_mode_invokes_docker_and_collects_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            workdir = source_dir / "pkg"
+            artifact_root = tmp_path / "artifacts"
+            workdir.mkdir(parents=True)
+            artifact_root.mkdir()
+            output_dir = artifact_root / "demo"
+            artifact_name = "demo_1.0_amd64.deb"
+
+            entry = {
+                "name": "demo",
+                "build": {
+                    "workdir": "pkg",
+                    "packages": ["git", "make"],
+                    "rustup_toolchain": "1.94.0",
+                    "setup": "echo extra-setup",
+                    "command": "./build.sh",
+                    "artifact_globs": ["*.deb"],
+                },
+            }
+
+            def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(args[:2], ["docker", "run"])
+                docker_script = args[-1]
+                self.assertIn("apt-get install -y --no-install-recommends ca-certificates git make curl", docker_script)
+                self.assertIn("rustc --version", docker_script)
+                self.assertIn("cargo --version", docker_script)
+                self.assertIn("echo extra-setup", docker_script)
+                self.assertIn("cd pkg", docker_script)
+                env = kwargs["env"]
+                self.assertEqual(env["SAFEDEBREPO_SOURCE"], "/workspace/source")
+                self.assertEqual(env["SAFEDEBREPO_OUTPUT"], "/workspace/output")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / artifact_name).write_text("deb")
+                return completed()
+
+            with mock.patch("tools.build_site.run", side_effect=fake_run) as run_mock:
+                artifacts = build_site.build_repo(
+                    entry,
+                    source_dir,
+                    artifact_root,
+                    "debian:trixie-slim",
+                    ["ca-certificates", "git"],
+                )
+
+        run_mock.assert_called_once()
+        self.assertEqual([path.name for path in artifacts], [artifact_name])
+
+    def test_build_repo_docker_mode_requires_output_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            artifact_root = tmp_path / "artifacts"
+            source_dir.mkdir()
+            artifact_root.mkdir()
+
+            with mock.patch("tools.build_site.run", return_value=completed()):
+                with self.assertRaisesRegex(build_site.BuildError, "no artifacts found"):
+                    build_site.build_repo(
+                        {
+                            "name": "demo",
+                            "build": {
+                                "workdir": ".",
+                                "command": "./build.sh",
+                                "artifact_globs": ["*.deb"],
+                            },
+                        },
+                        source_dir,
+                        artifact_root,
+                        "debian:trixie-slim",
+                        [],
+                    )
+
+    def test_prepare_signing_key_imports_private_key_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "SAFEDEBREPO_GPG_PRIVATE_KEY": "PRIVATE KEY",
+                        "SAFEDEBREPO_GPG_PASSPHRASE": "secret",
+                    },
+                    clear=False,
+                ),
+                mock.patch("tools.build_site.tempfile.mkdtemp", return_value=tmp),
+                mock.patch("tools.build_site.run") as run_mock,
+            ):
+                run_mock.side_effect = [
+                    completed(),
+                    completed(stdout="fpr:::::::::ABCDEF1234567890:\n"),
+                ]
+                homedir, fingerprint, passphrase = build_site.prepare_signing_key()
+
+        self.assertEqual(homedir, Path(tmp))
+        self.assertEqual(fingerprint, "ABCDEF1234567890")
+        self.assertEqual(passphrase, "secret")
+        self.assertEqual(run_mock.call_args_list[0].kwargs["input_text"], "PRIVATE KEY")
+        self.assertEqual(run_mock.call_args_list[0].args[0][:4], ["gpg", "--batch", "--homedir", tmp])
+
+    def test_prepare_signing_key_requires_discoverable_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch("tools.build_site.tempfile.mkdtemp", return_value=tmp),
+                mock.patch("tools.build_site.run") as run_mock,
+            ):
+                run_mock.side_effect = [completed(), completed(stdout="sec:::::::::\n")]
+                with self.assertRaisesRegex(
+                    build_site.BuildError, "failed to discover signing key fingerprint"
+                ):
+                    build_site.prepare_signing_key()
+
+    def test_sign_release_passes_through_passphrase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site_root = Path(tmp)
+            release_dir = site_root / "dists" / "stable"
+            release_dir.mkdir(parents=True)
+            (release_dir / "Release").write_text("Origin: SafeLibs\n")
+            with mock.patch("tools.build_site.run") as run_mock:
+                build_site.sign_release(site_root, "stable", Path("/tmp/keyring"), "ABC123", "secret")
+
+        clearsign_args = run_mock.call_args_list[0].args[0]
+        detach_args = run_mock.call_args_list[1].args[0]
+        self.assertIn("--passphrase", clearsign_args)
+        self.assertIn("secret", clearsign_args)
+        self.assertIn("--passphrase", detach_args)
+        self.assertIn("secret", detach_args)
+
+    def test_write_preferences_file_requires_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            site_root = Path(tmp)
+            with self.assertRaisesRegex(
+                build_site.BuildError, "cannot write apt preferences without published packages"
+            ):
+                build_site.write_preferences_file(site_root, archive_config(), [])
+
     def test_generate_site_from_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -67,18 +425,7 @@ class BuildSiteTests(unittest.TestCase):
             deb_b = make_deb(tmp_path, "libbeta1", "2.0+safelibs1")
             output_dir = tmp_path / "site"
             template_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
-            config = {
-                "archive": {
-                    "suite": "stable",
-                    "component": "main",
-                    "origin": "SafeLibs",
-                    "label": "SafeLibs",
-                    "description": "Test repo",
-                    "homepage": "https://example.invalid/project",
-                    "base_url": "https://example.invalid/repo/",
-                    "key_name": "safelibs",
-                }
-            }
+            config = {"archive": archive_config()}
 
             infos = build_site.generate_site_from_artifacts(
                 config,
@@ -110,6 +457,103 @@ class BuildSiteTests(unittest.TestCase):
         stanzas = build_site.split_stanzas(raw)
         self.assertEqual(len(stanzas), 2)
         self.assertTrue(stanzas[0].startswith("Package: a"))
+
+    def test_main_skip_build_uses_cached_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "workspace"
+            output = tmp_path / "site"
+            artifact_a = workspace / "artifacts" / "alpha" / "a.deb"
+            artifact_b = workspace / "artifacts" / "zeta" / "b.deb"
+            artifact_a.parent.mkdir(parents=True)
+            artifact_b.parent.mkdir(parents=True)
+            artifact_a.write_text("a")
+            artifact_b.write_text("b")
+            args = argparse.Namespace(
+                config=tmp_path / "repositories.yml",
+                output=output,
+                workspace=workspace,
+                base_url="",
+                skip_build=True,
+            )
+            config = {"archive": archive_config(), "repositories": [repo_config("alpha")]}
+
+            with (
+                mock.patch("tools.build_site.parse_args", return_value=args),
+                mock.patch("tools.build_site.load_config", return_value=config),
+                mock.patch("tools.build_site.generate_site_from_artifacts") as generate_mock,
+                mock.patch("tools.build_site.sync_repo") as sync_mock,
+                mock.patch("tools.build_site.build_repo") as build_mock,
+            ):
+                result = build_site.main()
+
+        self.assertEqual(result, 0)
+        sync_mock.assert_not_called()
+        build_mock.assert_not_called()
+        self.assertEqual(generate_mock.call_args.args[1], [artifact_a, artifact_b])
+        self.assertEqual(
+            generate_mock.call_args.kwargs["base_url"], "https://example.invalid/repo/"
+        )
+
+    def test_main_build_flow_syncs_and_builds_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "workspace"
+            output = tmp_path / "site"
+            args = argparse.Namespace(
+                config=tmp_path / "repositories.yml",
+                output=output,
+                workspace=workspace,
+                base_url="https://override.invalid/repo/",
+                skip_build=False,
+            )
+            config = {
+                "archive": {
+                    **archive_config(),
+                    "install_packages": ["ca-certificates", "git"],
+                },
+                "repositories": [repo_config("alpha"), repo_config("beta")],
+            }
+            source_dirs = [workspace / "sources" / "alpha", workspace / "sources" / "beta"]
+            built_artifacts = [
+                [workspace / "artifacts" / "alpha" / "alpha.deb"],
+                [
+                    workspace / "artifacts" / "beta" / "beta-a.deb",
+                    workspace / "artifacts" / "beta" / "beta-b.deb",
+                ],
+            ]
+
+            with (
+                mock.patch("tools.build_site.parse_args", return_value=args),
+                mock.patch("tools.build_site.load_config", return_value=config),
+                mock.patch("tools.build_site.sync_repo", side_effect=source_dirs) as sync_mock,
+                mock.patch("tools.build_site.build_repo", side_effect=built_artifacts) as build_mock,
+                mock.patch("tools.build_site.generate_site_from_artifacts") as generate_mock,
+            ):
+                result = build_site.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(sync_mock.call_count, 2)
+        self.assertEqual(build_mock.call_count, 2)
+        self.assertEqual(
+            [call.args[0]["name"] for call in build_mock.call_args_list],
+            ["alpha", "beta"],
+        )
+        self.assertEqual(
+            build_mock.call_args_list[0].args[3:],
+            ("debian:trixie-slim", ["ca-certificates", "git"]),
+        )
+        self.assertEqual(
+            generate_mock.call_args.args[1],
+            [
+                workspace / "artifacts" / "alpha" / "alpha.deb",
+                workspace / "artifacts" / "beta" / "beta-a.deb",
+                workspace / "artifacts" / "beta" / "beta-b.deb",
+            ],
+        )
+        self.assertEqual(
+            generate_mock.call_args.kwargs["base_url"], "https://override.invalid/repo/"
+        )
 
 
 if __name__ == "__main__":

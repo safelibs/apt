@@ -59,8 +59,46 @@ def load_config(path: Path) -> dict[str, Any]:
         raise BuildError(f"{path} must contain a YAML mapping")
     if "archive" not in data or "repositories" not in data:
         raise BuildError(f"{path} must define archive and repositories")
-    if not isinstance(data["repositories"], list) or not data["repositories"]:
+    archive = data["archive"]
+    repositories = data["repositories"]
+    if not isinstance(archive, dict):
+        raise BuildError(f"{path} archive must be a YAML mapping")
+    if not isinstance(repositories, list) or not repositories:
         raise BuildError(f"{path} must define a non-empty repositories list")
+
+    for field in [
+        "suite",
+        "component",
+        "origin",
+        "label",
+        "description",
+        "homepage",
+        "base_url",
+        "key_name",
+        "image",
+    ]:
+        if not str(archive.get(field) or "").strip():
+            raise BuildError(f"{path} archive must define {field}")
+
+    for index, entry in enumerate(repositories, start=1):
+        if not isinstance(entry, dict):
+            raise BuildError(f"{path} repository #{index} must be a YAML mapping")
+        for field in ["name", "github_repo", "ref"]:
+            if not str(entry.get(field) or "").strip():
+                raise BuildError(f"{path} repository #{index} must define {field}")
+
+        build = entry.get("build")
+        if not isinstance(build, dict):
+            raise BuildError(f"{path} repository #{index} must define build")
+        artifact_globs = build.get("artifact_globs")
+        if not isinstance(artifact_globs, list) or not artifact_globs:
+            raise BuildError(f"{path} repository #{index} build must define artifact_globs")
+        if not all(str(pattern).strip() for pattern in artifact_globs):
+            raise BuildError(f"{path} repository #{index} build artifact_globs must be non-empty")
+
+        mode = str(build.get("mode") or "docker")
+        if mode == "docker" and not str(build.get("command") or "").strip():
+            raise BuildError(f"{path} repository #{index} docker build must define command")
     return data
 
 
