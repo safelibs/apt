@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import subprocess
 import tempfile
@@ -68,6 +69,21 @@ def repo_config(name: str = "demo") -> dict[str, object]:
     }
 
 
+def config_with_repo(
+    *,
+    archive: dict[str, object] | None = None,
+    repository: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "archive": copy.deepcopy(archive if archive is not None else archive_config()),
+        "repositories": [copy.deepcopy(repository if repository is not None else repo_config())],
+    }
+
+
+def write_config(path: Path, data: dict[str, object]) -> None:
+    path.write_text(yaml.safe_dump(data))
+
+
 class BuildSiteTests(unittest.TestCase):
     def test_run_wraps_subprocess_failures(self) -> None:
         error = subprocess.CalledProcessError(
@@ -96,34 +112,168 @@ class BuildSiteTests(unittest.TestCase):
     def test_load_config_requires_archive_and_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "repositories.yml"
-            config_path.write_text(yaml.safe_dump({"archive": archive_config()}))
+            write_config(config_path, {"archive": archive_config()})
             with self.assertRaisesRegex(
                 build_site.BuildError, "must define archive and repositories"
             ):
                 build_site.load_config(config_path)
 
+    def test_load_config_requires_archive_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            write_config(config_path, {"archive": [], "repositories": [repo_config()]})
+            with self.assertRaisesRegex(build_site.BuildError, "archive must be a YAML mapping"):
+                build_site.load_config(config_path)
+
+    def test_load_config_requires_non_empty_repository_list(self) -> None:
+        for repositories in ({}, []):
+            with self.subTest(repositories=repositories):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "repositories.yml"
+                    write_config(
+                        config_path,
+                        {"archive": archive_config(), "repositories": repositories},
+                    )
+                    with self.assertRaisesRegex(
+                        build_site.BuildError, "must define a non-empty repositories list"
+                    ):
+                        build_site.load_config(config_path)
+
+    def test_load_config_requires_each_archive_field(self) -> None:
+        for field in [
+            "suite",
+            "component",
+            "origin",
+            "label",
+            "description",
+            "homepage",
+            "base_url",
+            "key_name",
+            "image",
+        ]:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "repositories.yml"
+                    config = config_with_repo()
+                    config["archive"][field] = "   "
+                    write_config(config_path, config)
+                    with self.assertRaisesRegex(
+                        build_site.BuildError, rf"archive must define {field}"
+                    ):
+                        build_site.load_config(config_path)
+
+    def test_load_config_requires_repository_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            write_config(config_path, {"archive": archive_config(), "repositories": ["broken"]})
+            with self.assertRaisesRegex(
+                build_site.BuildError, r"repository #1 must be a YAML mapping"
+            ):
+                build_site.load_config(config_path)
+
+    def test_load_config_requires_each_repository_field(self) -> None:
+        for field in ["name", "github_repo", "ref"]:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "repositories.yml"
+                    config = config_with_repo()
+                    config["repositories"][0][field] = "  "
+                    write_config(config_path, config)
+                    with self.assertRaisesRegex(
+                        build_site.BuildError, rf"repository #1 must define {field}"
+                    ):
+                        build_site.load_config(config_path)
+
+    def test_load_config_requires_build_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            config = config_with_repo()
+            config["repositories"][0]["build"] = None
+            write_config(config_path, config)
+            with self.assertRaisesRegex(build_site.BuildError, r"repository #1 must define build"):
+                build_site.load_config(config_path)
+
+    def test_load_config_requires_artifact_globs_list(self) -> None:
+        for artifact_globs in (None, [], "*.deb"):
+            with self.subTest(artifact_globs=artifact_globs):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "repositories.yml"
+                    config = config_with_repo()
+                    config["repositories"][0]["build"]["artifact_globs"] = artifact_globs
+                    write_config(config_path, config)
+                    with self.assertRaisesRegex(
+                        build_site.BuildError, r"repository #1 build must define artifact_globs"
+                    ):
+                        build_site.load_config(config_path)
+
+    def test_load_config_requires_non_empty_artifact_globs(self) -> None:
+        for artifact_globs in ([""], ["*.deb", "   "]):
+            with self.subTest(artifact_globs=artifact_globs):
+                with tempfile.TemporaryDirectory() as tmp:
+                    config_path = Path(tmp) / "repositories.yml"
+                    config = config_with_repo()
+                    config["repositories"][0]["build"]["artifact_globs"] = artifact_globs
+                    write_config(config_path, config)
+                    with self.assertRaisesRegex(
+                        build_site.BuildError,
+                        r"repository #1 build artifact_globs must be non-empty",
+                    ):
+                        build_site.load_config(config_path)
+
     def test_load_config_validates_repository_build_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "repositories.yml"
-            config_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "archive": archive_config(),
-                        "repositories": [
-                            {
-                                "name": "broken",
-                                "github_repo": "safelibs/port-broken",
-                                "ref": "refs/tags/broken/04-test",
-                                "build": {"artifact_globs": ["*.deb"]},
-                            }
-                        ],
+            write_config(
+                config_path,
+                config_with_repo(
+                    repository={
+                        "name": "broken",
+                        "github_repo": "safelibs/port-broken",
+                        "ref": "refs/tags/broken/04-test",
+                        "build": {"artifact_globs": ["*.deb"]},
                     }
-                )
+                ),
             )
             with self.assertRaisesRegex(
                 build_site.BuildError, "docker build must define command"
             ):
                 build_site.load_config(config_path)
+
+    def test_load_config_allows_checkout_artifacts_without_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            write_config(
+                config_path,
+                config_with_repo(
+                    repository={
+                        "name": "artifacts-only",
+                        "github_repo": "safelibs/port-artifacts-only",
+                        "ref": "refs/tags/artifacts-only/04-test",
+                        "build": {
+                            "mode": "checkout-artifacts",
+                            "workdir": ".",
+                            "artifact_globs": ["*.deb"],
+                        },
+                    }
+                ),
+            )
+            loaded = build_site.load_config(config_path)
+
+        self.assertEqual(loaded["repositories"][0]["build"]["mode"], "checkout-artifacts")
+        self.assertNotIn("command", loaded["repositories"][0]["build"])
+
+    def test_load_config_accepts_checked_in_repositories_file(self) -> None:
+        config_path = Path(__file__).resolve().parent.parent / "repositories.yml"
+        loaded = build_site.load_config(config_path)
+
+        self.assertEqual(loaded["archive"]["suite"], "stable")
+        self.assertEqual(loaded["archive"]["key_name"], "safelibs")
+        self.assertEqual(
+            [entry["name"] for entry in loaded["repositories"]],
+            ["libjson", "libpng", "libzstd"],
+        )
+        self.assertEqual(loaded["repositories"][1]["build"]["mode"], "checkout-artifacts")
+        self.assertNotIn("command", loaded["repositories"][1]["build"])
 
     def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
