@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SafeLibs Debian Repository</title>
+  <style>
+    :root {{
+      --bg: #f1f4ef;
+      --card: rgba(255, 255, 255, 0.92);
+      --text: #16210f;
+      --muted: #52644a;
+      --accent: #2f6f3e;
+      --accent-2: #8fbc5a;
+      --border: rgba(47, 111, 62, 0.16);
+      --code-bg: #132018;
+      --code-text: #eef7ea;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(143, 188, 90, 0.28), transparent 34%),
+        radial-gradient(circle at top right, rgba(47, 111, 62, 0.22), transparent 28%),
+        linear-gradient(180deg, #eef5e8 0%, var(--bg) 42%, #e8efe4 100%);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      line-height: 1.55;
+      min-height: 100vh;
+    }}
+    .wrap {{
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }}
+    .hero {{
+      display: grid;
+      gap: 1.5rem;
+      grid-template-columns: 1.3fr 0.9fr;
+      align-items: start;
+    }}
+    .panel {{
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: 0 20px 50px rgba(22, 33, 15, 0.08);
+      backdrop-filter: blur(8px);
+    }}
+    .lead {{
+      padding: 2rem;
+    }}
+    .meta {{
+      padding: 1.5rem;
+    }}
+    h1 {{
+      margin: 0 0 0.75rem;
+      font-family: "IBM Plex Serif", Georgia, serif;
+      font-size: clamp(2.3rem, 5vw, 4rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }}
+    h2 {{
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--accent);
+    }}
+    p {{
+      margin: 0 0 1rem;
+      color: var(--muted);
+    }}
+    .chip {{
+      display: inline-block;
+      padding: 0.35rem 0.7rem;
+      border-radius: 999px;
+      background: rgba(47, 111, 62, 0.08);
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }}
+    pre {{
+      margin: 1rem 0 0;
+      padding: 1rem 1.1rem;
+      border-radius: 14px;
+      background: var(--code-bg);
+      color: var(--code-text);
+      overflow-x: auto;
+      font-size: 0.95rem;
+    }}
+    code {{
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+    }}
+    ul {{
+      padding-left: 1.1rem;
+      color: var(--muted);
+    }}
+    a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+    a:hover {{
+      text-decoration: underline;
+    }}
+    .grid {{
+      margin-top: 1.5rem;
+      display: grid;
+      gap: 1.5rem;
+      grid-template-columns: 1fr 1fr;
+    }}
+    .stack > * + * {{
+      margin-top: 0.75rem;
+    }}
+    .fingerprint {{
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      word-break: break-word;
+      color: var(--text);
+    }}
+    @media (max-width: 860px) {{
+      .hero,
+      .grid {{
+        grid-template-columns: 1fr;
+      }}
+      .wrap {{
+        padding-top: 1.5rem;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <article class="panel lead">
+        <div class="chip">Static apt repository on GitHub Pages</div>
+        <h1>SafeLibs Debian Repository</h1>
+        <p>
+          Memory-safe drop-in packages for selected C libraries, published as a
+          signed static apt repository.
+        </p>
+        <pre><code>sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
+curl -fsSL {base_url}/{key_name}.gpg | sudo tee /etc/apt/keyrings/{key_name}.gpg > /dev/null
+curl -fsSL {base_url}/{key_name}.pref | sudo tee /etc/apt/preferences.d/{key_name}.pref > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/{key_name}.gpg] {base_url} {suite} {component}" | sudo tee /etc/apt/sources.list.d/{key_name}.list
+sudo apt-get update</code></pre>
+      </article>
+
+      <aside class="panel meta stack">
+        <div>
+          <h2>Archive</h2>
+          <p><strong>Suite:</strong> {suite}</p>
+          <p><strong>Component:</strong> {component}</p>
+          <p><strong>Origin:</strong> {origin}</p>
+        </div>
+        <div>
+          <h2>Key Fingerprint</h2>
+          <p class="fingerprint">{fingerprint}</p>
+        </div>
+        <div>
+          <h2>Project</h2>
+          <p><a href="{homepage}">{homepage}</a></p>
+        </div>
+      </aside>
+    </section>
+
+    <section class="grid">
+      <article class="panel meta">
+        <h2>Published Packages</h2>
+        <ul>
+{package_items}
+        </ul>
+      </article>
+
+      <article class="panel meta">
+        <h2>Repository Notes</h2>
+        <p>{description}</p>
+        <p>
+          The site is generated from pinned SafeLibs package repos, then verified
+          with <code>apt</code> inside Debian Docker before publication.
+        </p>
+        <p>
+          Install the published <code>{key_name}.pref</code> file so
+          <code>apt</code> prefers the SafeLibs builds even when Debian carries a
+          newer upstream version.
+        </p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

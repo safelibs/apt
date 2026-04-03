@@ -1,0 +1,64 @@
+name: pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.SAFELIBS_REPO_TOKEN }}
+      SAFEDEBREPO_GPG_PRIVATE_KEY: ${{ secrets.SAFEDEBREPO_GPG_PRIVATE_KEY }}
+      SAFEDEBREPO_GPG_PASSPHRASE: ${{ secrets.SAFEDEBREPO_GPG_PASSPHRASE }}
+      BASE_URL: https://safelibs.github.io/deb-repo/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required deployment secrets
+        run: |
+          test -n "${GH_TOKEN}" || {
+            echo "SAFELIBS_REPO_TOKEN is required to clone private safelibs/port-* repos" >&2
+            exit 1
+          }
+          test -n "${SAFEDEBREPO_GPG_PRIVATE_KEY}" || {
+            echo "SAFEDEBREPO_GPG_PRIVATE_KEY is required for Pages deployment" >&2
+            exit 1
+          }
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg python3-yaml
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build Pages site
+        run: make build-site
+
+      - name: Verify apt repo in Debian Docker
+        run: make verify-docker
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

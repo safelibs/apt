@@ -1,0 +1,89 @@
+archive:
+  suite: stable
+  component: main
+  origin: SafeLibs
+  label: SafeLibs
+  description: Memory-safe drop-in replacements packaged by SafeLibs
+  homepage: https://github.com/safelibs/deb-repo
+  base_url: https://safelibs.github.io/deb-repo/
+  key_name: safelibs
+  pin_priority: 1001
+  image: debian:trixie-slim
+  install_packages:
+    - ca-certificates
+    - file
+    - git
+    - jq
+    - python3
+    - rsync
+    - xz-utils
+
+repositories:
+  - name: libjson
+    github_repo: safelibs/port-libjson
+    ref: refs/tags/libjson/04-test
+    verify_packages:
+      - libjson-c5
+      - libjson-c-dev
+    build:
+      workdir: .
+      packages:
+        - build-essential
+        - cargo
+        - cmake
+        - debhelper
+        - dpkg-dev
+        - fakeroot
+        - pkg-config
+        - rustc
+      command: |
+        safe/tools/build-debs.sh \
+          --workspace "$SAFEDEBREPO_SOURCE" \
+          --out "$SAFEDEBREPO_OUTPUT"
+      artifact_globs:
+        - "*.deb"
+
+  - name: libpng
+    github_repo: safelibs/port-libpng
+    ref: refs/tags/libpng/04-test
+    verify_packages:
+      - libpng16-16t64
+      - libpng-dev
+      - libpng-tools
+    build:
+      mode: checkout-artifacts
+      workdir: .
+      artifact_globs:
+        - "*.deb"
+
+  - name: libzstd
+    github_repo: safelibs/port-libzstd
+    ref: refs/tags/libzstd/04-test
+    verify_packages:
+      - libzstd1
+      - libzstd-dev
+      - zstd
+    build:
+      workdir: .
+      rustup_toolchain: 1.94.0
+      packages:
+        - build-essential
+        - cargo
+        - cmake
+        - curl
+        - debhelper
+        - dh-package-notes
+        - dpkg-dev
+        - fakeroot
+        - help2man
+        - less
+        - liblz4-dev
+        - liblzma-dev
+        - python3
+        - rustc
+        - zlib1g-dev
+      command: |
+        bash safe/scripts/build-deb.sh
+        cp -v safe/out/*.deb "$SAFEDEBREPO_OUTPUT"/
+      artifact_globs:
+        - "*.deb"

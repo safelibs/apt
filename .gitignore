@@ -1,0 +1,7 @@
+.work/
+site/
+__pycache__/
+.pytest_cache/
+*.pyc
+.juvenal-state.json
+

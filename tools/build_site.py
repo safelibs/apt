@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+class BuildError(RuntimeError):
+    """Raised when site generation fails."""
+
+
+@dataclass(frozen=True)
+class PackageInfo:
+    path: Path
+    name: str
+    version: str
+    architecture: str
+    pool_path: Path
+
+
+def run(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            input=input_text,
+            text=True,
+            check=True,
+            capture_output=capture_output,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = "\n".join(
+            part.strip() for part in (exc.stdout or "", exc.stderr or "") if part.strip()
+        )
+        location = f" (cwd={cwd})" if cwd is not None else ""
+        raise BuildError(f"{' '.join(args)} failed{location}: {details or exc}") from exc
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, dict):
+        raise BuildError(f"{path} must contain a YAML mapping")
+    if "archive" not in data or "repositories" not in data:
+        raise BuildError(f"{path} must define archive and repositories")
+    if not isinstance(data["repositories"], list) or not data["repositories"]:
+        raise BuildError(f"{path} must define a non-empty repositories list")
+    return data
+
+
+def dedupe(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def clone_or_update_repo(repo_name: str, target_dir: Path) -> None:
+    if target_dir.exists():
+        run(["git", "-C", str(target_dir), "reset", "--hard", "HEAD"])
+        run(["git", "-C", str(target_dir), "clean", "-fdx"])
+        run(["git", "-C", str(target_dir), "fetch", "--tags", "--prune", "origin"])
+        return
+    if shutil.which("gh"):
+        run(["gh", "repo", "clone", repo_name, str(target_dir), "--", "--filter=blob:none"])
+        return
+    raise BuildError("gh is required to clone private safelibs repositories")
+
+
+def sync_repo(entry: dict[str, Any], source_root: Path) -> Path:
+    repo_name = str(entry["github_repo"])
+    ref = str(entry["ref"])
+    target_dir = source_root / str(entry["name"])
+    clone_or_update_repo(repo_name, target_dir)
+    run(["git", "-C", str(target_dir), "checkout", "--detach", ref])
+    return target_dir
+
+
+def build_repo(
+    entry: dict[str, Any],
+    source_dir: Path,
+    artifact_root: Path,
+    default_image: str,
+    default_packages: list[str],
+) -> list[Path]:
+    build = dict(entry["build"])
+    mode = str(build.get("mode") or "docker")
+    image = str(build.get("image") or default_image)
+    packages = dedupe(default_packages + list(build.get("packages", [])))
+    rustup_toolchain = str(build.get("rustup_toolchain") or "").strip()
+    if rustup_toolchain and "curl" not in packages:
+        packages.append("curl")
+    output_dir = artifact_root / str(entry["name"])
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    workdir = source_dir / str(build.get("workdir") or ".")
+    if not workdir.exists():
+        raise BuildError(f"missing workdir for {entry['name']}: {workdir}")
+
+    if mode == "checkout-artifacts":
+        artifacts: list[Path] = []
+        for pattern in build["artifact_globs"]:
+            for source_path in sorted(workdir.glob(str(pattern))):
+                dest = output_dir / source_path.name
+                shutil.copy2(source_path, dest)
+                artifacts.append(dest)
+        if not artifacts:
+            raise BuildError(f"no checked-in artifacts found for {entry['name']} under {workdir}")
+        return dedupe_paths(artifacts)
+
+    if mode != "docker":
+        raise BuildError(f"unsupported build mode for {entry['name']}: {mode}")
+
+    script = str(build["command"]).strip()
+    env = os.environ.copy()
+    env["SAFEDEBREPO_SOURCE"] = "/workspace/source"
+    env["SAFEDEBREPO_OUTPUT"] = "/workspace/output"
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+
+    install_cmd = " ".join(packages)
+    setup_steps: list[str] = []
+    if rustup_toolchain:
+        setup_steps.extend(
+            [
+                f"curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain {shell_quote(rustup_toolchain)}",
+                'source "$HOME/.cargo/env"',
+                "rustc --version",
+                "cargo --version",
+            ]
+        )
+    extra_setup = str(build.get("setup") or "").strip()
+    if extra_setup:
+        setup_steps.append(extra_setup)
+    docker_script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"trap 'chown -R {host_uid}:{host_gid} /workspace/source /workspace/output' EXIT",
+            "export DEBIAN_FRONTEND=noninteractive",
+            "apt-get update",
+            f"apt-get install -y --no-install-recommends {install_cmd}",
+            *setup_steps,
+            "git config --global --add safe.directory /workspace/source",
+            f"cd {shell_quote(str(workdir.relative_to(source_dir)) or '.')}",
+            script,
+        ]
+    )
+
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--mount",
+            f"type=bind,src={source_dir.resolve()},dst=/workspace/source",
+            "--mount",
+            f"type=bind,src={output_dir.resolve()},dst=/workspace/output",
+            "-w",
+            "/workspace/source",
+            "-e",
+            "SAFEDEBREPO_SOURCE=/workspace/source",
+            "-e",
+            "SAFEDEBREPO_OUTPUT=/workspace/output",
+            image,
+            "bash",
+            "-lc",
+            docker_script,
+        ],
+        env=env,
+    )
+
+    artifacts: list[Path] = []
+    for pattern in build["artifact_globs"]:
+        artifacts.extend(sorted(output_dir.glob(str(pattern))))
+    artifacts = dedupe_paths(artifacts)
+    if not artifacts:
+        raise BuildError(f"no artifacts found for {entry['name']} in {output_dir}")
+    return artifacts
+
+
+def dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: dict[str, Path] = {}
+    for path in paths:
+        seen[str(path)] = path
+    return list(seen.values())
+
+
+def shell_quote(value: str) -> str:
+    return shlex.quote(value)
+
+
+def read_package_info(package_path: Path, component: str) -> PackageInfo:
+    def field(name: str) -> str:
+        result = run(
+            ["dpkg-deb", "-f", str(package_path), name],
+            capture_output=True,
+        )
+        return result.stdout.strip()
+
+    package_name = field("Package")
+    version = field("Version")
+    architecture = field("Architecture")
+    pool_rel = Path("pool") / component / package_name[0] / package_name / package_path.name
+    return PackageInfo(
+        path=package_path,
+        name=package_name,
+        version=version,
+        architecture=architecture,
+        pool_path=pool_rel,
+    )
+
+
+def stage_packages(site_root: Path, component: str, package_paths: list[Path]) -> list[PackageInfo]:
+    infos: list[PackageInfo] = []
+    for package_path in package_paths:
+        info = read_package_info(package_path, component)
+        dest = site_root / info.pool_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(package_path, dest)
+        infos.append(
+            PackageInfo(
+                path=dest,
+                name=info.name,
+                version=info.version,
+                architecture=info.architecture,
+                pool_path=info.pool_path,
+            )
+        )
+    return infos
+
+
+def split_stanzas(raw_text: str) -> list[str]:
+    stanzas = [chunk.strip() for chunk in raw_text.split("\n\n")]
+    return [f"{chunk}\n" for chunk in stanzas if chunk]
+
+
+def stanza_field(stanza: str, name: str) -> str:
+    prefix = f"{name}: "
+    for line in stanza.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    raise BuildError(f"missing {name} in stanza:\n{stanza}")
+
+
+def write_package_indexes(site_root: Path, suite: str, component: str) -> list[str]:
+    packages_output = run(
+        ["apt-ftparchive", "packages", "pool"],
+        cwd=site_root,
+        capture_output=True,
+    ).stdout
+    stanzas = split_stanzas(packages_output)
+    by_arch: dict[str, list[str]] = {}
+    for stanza in stanzas:
+        arch = stanza_field(stanza, "Architecture")
+        by_arch.setdefault(arch, []).append(stanza)
+
+    architectures = sorted(by_arch)
+    for arch, arch_stanzas in by_arch.items():
+        binary_dir = site_root / "dists" / suite / component / f"binary-{arch}"
+        binary_dir.mkdir(parents=True, exist_ok=True)
+        packages_path = binary_dir / "Packages"
+        packages_path.write_text("\n".join(arch_stanzas))
+        run(["gzip", "-9", "-kf", str(packages_path)])
+    return architectures
+
+
+def export_public_key_binary(homedir: Path, key_id: str, site_root: Path, key_name: str) -> None:
+    asc_path = site_root / f"{key_name}.asc"
+    gpg_path = site_root / f"{key_name}.gpg"
+
+    with asc_path.open("w", encoding="utf-8") as handle:
+        handle.write(
+            run(
+                ["gpg", "--homedir", str(homedir), "--armor", "--export", key_id],
+                capture_output=True,
+            ).stdout
+        )
+    gpg_bytes = subprocess.check_output(
+        ["gpg", "--homedir", str(homedir), "--export", key_id],
+        text=False,
+    )
+    gpg_path.write_bytes(gpg_bytes)
+
+
+def prepare_signing_key() -> tuple[Path, str, str]:
+    homedir = Path(tempfile.mkdtemp(prefix="safelibs-gpg-"))
+    private_key = os.environ.get("SAFEDEBREPO_GPG_PRIVATE_KEY", "").strip()
+    passphrase = os.environ.get("SAFEDEBREPO_GPG_PASSPHRASE", "")
+
+    if private_key:
+        run(
+            ["gpg", "--batch", "--homedir", str(homedir), "--import"],
+            input_text=private_key,
+        )
+    else:
+        params = "\n".join(
+            [
+                "%no-protection",
+                "Key-Type: RSA",
+                "Key-Length: 3072",
+                "Subkey-Type: RSA",
+                "Subkey-Length: 3072",
+                "Name-Real: SafeLibs Archive Test Key",
+                "Name-Email: noreply@safelibs.invalid",
+                "Expire-Date: 0",
+                "%commit",
+            ]
+        )
+        run(
+            ["gpg", "--batch", "--homedir", str(homedir), "--generate-key"],
+            input_text=params,
+        )
+
+    listing = run(
+        ["gpg", "--homedir", str(homedir), "--list-secret-keys", "--with-colons"],
+        capture_output=True,
+    ).stdout.splitlines()
+    fingerprints = [line.split(":")[9] for line in listing if line.startswith("fpr:")]
+    if not fingerprints:
+        raise BuildError("failed to discover signing key fingerprint")
+    fingerprint = fingerprints[0]
+    return homedir, fingerprint, passphrase
+
+
+def write_release_file(
+    site_root: Path,
+    suite: str,
+    component: str,
+    architectures: list[str],
+    archive: dict[str, Any],
+) -> None:
+    release_path = site_root / "dists" / suite / "Release"
+    release_text = run(
+        [
+            "apt-ftparchive",
+            "-o",
+            f"APT::FTPArchive::Release::Origin={archive['origin']}",
+            "-o",
+            f"APT::FTPArchive::Release::Label={archive['label']}",
+            "-o",
+            f"APT::FTPArchive::Release::Suite={suite}",
+            "-o",
+            f"APT::FTPArchive::Release::Codename={suite}",
+            "-o",
+            f"APT::FTPArchive::Release::Architectures={' '.join(architectures)}",
+            "-o",
+            f"APT::FTPArchive::Release::Components={component}",
+            "-o",
+            f"APT::FTPArchive::Release::Description={archive['description']}",
+            "release",
+            str(site_root / "dists" / suite),
+        ],
+        capture_output=True,
+    ).stdout
+    release_path.write_text(release_text)
+
+
+def sign_release(site_root: Path, suite: str, homedir: Path, key_id: str, passphrase: str) -> None:
+    release_path = site_root / "dists" / suite / "Release"
+    inrelease_path = site_root / "dists" / suite / "InRelease"
+    detached_path = site_root / "dists" / suite / "Release.gpg"
+    base = [
+        "gpg",
+        "--batch",
+        "--yes",
+        "--homedir",
+        str(homedir),
+        "--pinentry-mode",
+        "loopback",
+        "-u",
+        key_id,
+    ]
+    if passphrase:
+        base.extend(["--passphrase", passphrase])
+
+    run(base + ["--clearsign", "--output", str(inrelease_path), str(release_path)])
+    run(base + ["--detach-sign", "--output", str(detached_path), str(release_path)])
+
+
+def fingerprint_display(fingerprint: str) -> str:
+    return " ".join(fingerprint[i : i + 4] for i in range(0, len(fingerprint), 4))
+
+
+def write_preferences_file(
+    site_root: Path,
+    archive: dict[str, Any],
+    package_infos: list[PackageInfo],
+) -> None:
+    package_names = " ".join(sorted({info.name for info in package_infos}))
+    if not package_names:
+        raise BuildError("cannot write apt preferences without published packages")
+
+    priority = int(archive.get("pin_priority", 1001))
+    preference_text = "\n".join(
+        [
+            "# Prefer SafeLibs builds for the published package set.",
+            f"Package: {package_names}",
+            f"Pin: release o={archive['origin']}",
+            f"Pin-Priority: {priority}",
+            "",
+        ]
+    )
+    (site_root / f"{archive['key_name']}.pref").write_text(preference_text)
+
+
+def render_index(
+    template_path: Path,
+    site_root: Path,
+    archive: dict[str, Any],
+    package_infos: list[PackageInfo],
+    fingerprint: str,
+    base_url: str,
+) -> None:
+    package_items = "\n".join(
+        f"          <li><code>{info.name}</code> <span>{info.version}</span></li>"
+        for info in sorted(package_infos, key=lambda item: item.name)
+    )
+    html = template_path.read_text().format(
+        base_url=base_url.rstrip("/"),
+        key_name=archive["key_name"],
+        suite=archive["suite"],
+        component=archive["component"],
+        origin=archive["origin"],
+        homepage=archive["homepage"],
+        description=archive["description"],
+        fingerprint=fingerprint_display(fingerprint),
+        package_items=package_items,
+    )
+    (site_root / "index.html").write_text(html)
+    (site_root / ".nojekyll").write_text("")
+
+
+def generate_site_from_artifacts(
+    config: dict[str, Any],
+    package_paths: list[Path],
+    output_dir: Path,
+    *,
+    template_path: Path,
+    base_url: str,
+) -> list[PackageInfo]:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True)
+
+    archive = config["archive"]
+    suite = str(archive["suite"])
+    component = str(archive["component"])
+    infos = stage_packages(output_dir, component, package_paths)
+    architectures = write_package_indexes(output_dir, suite, component)
+    if not architectures:
+        raise BuildError("no package indexes were generated")
+
+    homedir, fingerprint, passphrase = prepare_signing_key()
+    export_public_key_binary(homedir, fingerprint, output_dir, str(archive["key_name"]))
+    write_release_file(output_dir, suite, component, architectures, archive)
+    sign_release(output_dir, suite, homedir, fingerprint, passphrase)
+    write_preferences_file(output_dir, archive, infos)
+    render_index(template_path, output_dir, archive, infos, fingerprint, base_url)
+    return infos
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the SafeLibs GitHub Pages apt repository")
+    parser.add_argument("--config", type=Path, default=Path("repositories.yml"))
+    parser.add_argument("--output", type=Path, default=Path("site"))
+    parser.add_argument("--workspace", type=Path, default=Path(".work"))
+    parser.add_argument("--base-url", default="")
+    parser.add_argument("--skip-build", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    config = load_config(args.config)
+    archive = config["archive"]
+    base_url = args.base_url or str(archive["base_url"])
+    source_root = args.workspace / "sources"
+    artifact_root = args.workspace / "artifacts"
+    source_root.mkdir(parents=True, exist_ok=True)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+
+    package_paths: list[Path] = []
+    if args.skip_build:
+        for repo_artifacts in sorted(artifact_root.glob("*/*.deb")):
+            package_paths.append(repo_artifacts)
+    else:
+        for entry in config["repositories"]:
+            source_dir = sync_repo(entry, source_root)
+            package_paths.extend(
+                build_repo(
+                    entry,
+                    source_dir,
+                    artifact_root,
+                    str(archive["image"]),
+                    list(archive.get("install_packages", [])),
+                )
+            )
+
+    generate_site_from_artifacts(
+        config,
+        package_paths,
+        args.output,
+        template_path=Path(__file__).resolve().parent.parent / "templates" / "index.html",
+        base_url=base_url,
+    )
+    print(f"wrote site to {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
