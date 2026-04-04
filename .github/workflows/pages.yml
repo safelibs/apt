@@ -79,34 +79,7 @@ jobs:
     env:
       PAGE_URL: ${{ needs.deploy.outputs.page_url }}
     steps:
-      - name: Verify public apt repo endpoints
-        run: |
-          set -euo pipefail
-          if test -z "${PAGE_URL}"; then
-            echo "Deploy job did not expose a page URL." >&2
-            exit 1
-          fi
+      - uses: actions/checkout@v4
 
-          targets=(
-            "${PAGE_URL}"
-            "${PAGE_URL}dists/noble/InRelease"
-            "${PAGE_URL}safelibs.gpg"
-          )
-
-          for target in "${targets[@]}"; do
-            echo "Checking ${target}"
-            success=0
-            for attempt in $(seq 1 30); do
-              status=$(curl -fsS -o /dev/null -w '%{http_code}' "${target}" || true)
-              if test "${status}" = "200"; then
-                success=1
-                break
-              fi
-              sleep 10
-            done
-
-            if test "${success}" -ne 1; then
-              echo "Public Pages smoke test failed for ${target}" >&2
-              exit 1
-            fi
-          done
+      - name: Verify public apt repo in Ubuntu 24.04 Docker
+        run: bash scripts/verify-in-ubuntu-docker.sh "${PAGE_URL}" repositories.yml
