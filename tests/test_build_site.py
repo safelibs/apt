@@ -300,9 +300,7 @@ class BuildSiteTests(unittest.TestCase):
             ):
                 build_site.clone_or_update_repo("safelibs/port-demo", target_dir)
 
-        run_mock.assert_called_once_with(
-            ["gh", "repo", "clone", "safelibs/port-demo", str(target_dir), "--", "--filter=blob:none"]
-        )
+        run_mock.assert_called_once_with(["gh", "repo", "clone", "safelibs/port-demo", str(target_dir)])
 
     def test_clone_or_update_repo_requires_gh_for_new_repos(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

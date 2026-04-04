@@ -121,7 +121,7 @@ def clone_or_update_repo(repo_name: str, target_dir: Path) -> None:
         run(["git", "-C", str(target_dir), "fetch", "--tags", "--prune", "origin"])
         return
     if shutil.which("gh"):
-        run(["gh", "repo", "clone", repo_name, str(target_dir), "--", "--filter=blob:none"])
+        run(["gh", "repo", "clone", repo_name, str(target_dir)])
         return
     raise BuildError("gh is required to clone private safelibs repositories")
 
