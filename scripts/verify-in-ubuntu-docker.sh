@@ -5,18 +5,30 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=${SAFEAPTREPO_VERIFY_IMAGE:-${SAFEDEBREPO_VERIFY_IMAGE:-ubuntu:24.04}}
 REPO_TARGET=${1:-"$ROOT_DIR/site"}
 CONFIG_PATH=${2:-"$ROOT_DIR/repositories.yml"}
+REPOSITORY_NAME=${3:-all}
 
 IFS=$'\t' read -r suite component key_name packages_csv <<EOF
-$(python3 - "$CONFIG_PATH" <<'PY'
+$(python3 - "$CONFIG_PATH" "$REPOSITORY_NAME" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
 config = yaml.safe_load(Path(sys.argv[1]).read_text())
 archive = config["archive"]
-packages = []
-for entry in config["repositories"]:
-    packages.extend(entry.get("verify_packages", []))
+repository_name = sys.argv[2]
+if repository_name == "all":
+    packages = []
+    for entry in config["repositories"]:
+        packages.extend(entry.get("verify_packages", []))
+else:
+    entry = next(
+        (candidate for candidate in config["repositories"] if candidate["name"] == repository_name),
+        None,
+    )
+    if entry is None:
+        raise SystemExit(f"unknown repository for verification: {repository_name}")
+    packages = list(entry.get("verify_packages", []))
+packages = list(dict.fromkeys(packages))
 print(
     "\t".join(
         [
@@ -43,16 +55,32 @@ docker_args=()
 
 if [[ -d "$REPO_TARGET" ]]; then
   site_dir=$(cd "$REPO_TARGET" && pwd)
+  if [[ -d "$site_dir/dists" ]]; then
+    repo_dir=$site_dir
+  else
+    repo_dir="$site_dir/$REPOSITORY_NAME"
+  fi
+  if [[ ! -d "$repo_dir" ]]; then
+    printf 'expected repository directory for %s under %s\n' "$REPOSITORY_NAME" "$REPO_TARGET" >&2
+    exit 1
+  fi
   repo_mode='local'
   repo_uri='file:///repo'
   madison_source='file:/repo'
   docker_args+=(
     --mount
-    "type=bind,src=$site_dir,dst=/repo,readonly"
+    "type=bind,src=$repo_dir,dst=/repo,readonly"
   )
 elif [[ "$REPO_TARGET" =~ ^https?:// ]]; then
   repo_mode='remote'
-  repo_uri=${REPO_TARGET%/}
+  case "${REPO_TARGET%/}" in
+    */"$REPOSITORY_NAME")
+      repo_uri=${REPO_TARGET%/}
+      ;;
+    *)
+      repo_uri="${REPO_TARGET%/}/$REPOSITORY_NAME"
+      ;;
+  esac
   madison_source=$repo_uri
 else
   printf 'expected site directory or http(s) base URL, got: %s\n' "$REPO_TARGET" >&2

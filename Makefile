@@ -13,7 +13,7 @@ build-site:
 	$(PYTHON) tools/build_site.py --config $(CONFIG) --output $(SITE_DIR) --workspace $(WORK_DIR) --base-url $(BASE_URL)
 
 verify-docker:
-	bash scripts/verify-in-ubuntu-docker.sh $(SITE_DIR) $(CONFIG)
+	bash scripts/verify-site.sh $(SITE_DIR) $(CONFIG)
 
 clean:
 	rm -rf $(SITE_DIR) $(WORK_DIR)

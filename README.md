@@ -43,7 +43,8 @@ The generated site now publishes:
 - `/all/`: the aggregate repository with every published SafeLibs package
 - `/<library>/`: one repository per configured library, for example
   `/libjson/`, `/libpng/`, and `/libzstd/`
-- `/`: a landing page that links to the split repositories
+- `/`: a landing page that links to the split repositories; installs should use
+  `/all/` or a library-specific subdirectory
 
 ## Local Usage
 
@@ -72,6 +73,9 @@ Verify the generated repository in Ubuntu 24.04 Docker:
 ```bash
 make verify-docker
 ```
+
+`make verify-docker` verifies the explicit `/all/` repository and each
+configured per-library repository.
 
 The site output lands in `site/`, with installable repositories under
 `site/all/` and `site/<library>/`. If `SAFEAPTREPO_GPG_PRIVATE_KEY` is not set,

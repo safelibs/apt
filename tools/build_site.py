@@ -680,20 +680,12 @@ def generate_split_site(
     if not all_package_paths:
         raise BuildError("cannot generate site without package artifacts")
 
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     signing_key = prepare_signing_key()
     _, fingerprint, _ = signing_key
-
-    # Keep the site root installable as the aggregate repository while the root
-    # index page becomes a landing page for the split repo layout.
-    generate_site_from_artifacts(
-        config,
-        all_package_paths,
-        output_dir,
-        template_path=repository_template_path,
-        base_url=base_url,
-        repository_name=ALL_REPOSITORY_NAME,
-        signing_key=signing_key,
-    )
 
     published_repositories = [
         PublishedRepository(

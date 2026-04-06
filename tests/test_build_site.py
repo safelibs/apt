@@ -674,7 +674,7 @@ class BuildSiteTests(unittest.TestCase):
             )
 
             self.assertEqual([repo.name for repo in published], ["all", "alpha", "beta"])
-            self.assertTrue((output_dir / "dists/noble/InRelease").exists())
+            self.assertFalse((output_dir / "dists").exists())
             self.assertTrue((output_dir / "all/dists/noble/InRelease").exists())
             self.assertTrue((output_dir / "alpha/dists/noble/InRelease").exists())
             self.assertTrue((output_dir / "beta/dists/noble/InRelease").exists())
