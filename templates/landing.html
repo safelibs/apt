@@ -153,7 +153,7 @@
         </p>
         <pre><code>sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
 curl -fsSL {default_repo_url}/{key_name}.gpg | sudo tee /etc/apt/keyrings/{key_name}.gpg > /dev/null
-curl -fsSL {default_repo_url}/{key_name}.pref | sudo tee /etc/apt/preferences.d/{preferences_file} > /dev/null
+curl -fsSL {default_repo_url}/{preferences_download} | sudo tee /etc/apt/preferences.d/{preferences_file} > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/{key_name}.gpg] {default_repo_url} {suite} {component}" | sudo tee /etc/apt/sources.list.d/{list_file} > /dev/null
 sudo apt-get update</code></pre>
       </article>

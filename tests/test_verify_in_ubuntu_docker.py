@@ -98,6 +98,7 @@ class VerifyInUbuntuDockerTests(unittest.TestCase):
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_PACKAGES"], "libjson-c5,libpng16-16t64")
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_REPO_URI"], f"{repo_target}/all")
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_KEY_NAME"], "safelibs")
+            self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_PREFERENCE_FILE"], "safelibs-all.pref")
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_SUITE"], "noble")
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_COMPONENT"], "main")
             self.assertNotIn("SAFEAPTREPO_VERIFY_SETUP", docker_env)
@@ -140,3 +141,4 @@ class VerifyInUbuntuDockerTests(unittest.TestCase):
 
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_PACKAGES"], "libpng16-16t64")
             self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_REPO_URI"], f"{repo_target}/extra")
+            self.assertEqual(docker_env["SAFEAPTREPO_VERIFY_PREFERENCE_FILE"], "safelibs-extra.pref")

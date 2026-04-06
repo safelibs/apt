@@ -636,6 +636,7 @@ class BuildSiteTests(unittest.TestCase):
             self.assertTrue((output_dir / "safelibs.asc").exists())
             self.assertTrue((output_dir / "safelibs.gpg").exists())
             self.assertTrue((output_dir / "safelibs.pref").exists())
+            self.assertTrue((output_dir / "safelibs-all.pref").exists())
             self.assertTrue((output_dir / "dists/noble/InRelease").exists())
             packages_text = (output_dir / "dists/noble/main/binary-amd64/Packages").read_text()
             self.assertIn("Package: libalpha1", packages_text)
@@ -643,6 +644,7 @@ class BuildSiteTests(unittest.TestCase):
             self.assertIn("\n\nPackage: libbeta1", packages_text)
             index_text = (output_dir / "index.html").read_text()
             self.assertIn("https://example.invalid/repo/safelibs.gpg", index_text)
+            self.assertIn("https://example.invalid/repo/safelibs-all.pref", index_text)
             self.assertIn("safelibs-all.pref", index_text)
             self.assertIn("safelibs-all.list", index_text)
             release_text = (output_dir / "dists/noble/Release").read_text()
@@ -678,6 +680,9 @@ class BuildSiteTests(unittest.TestCase):
             self.assertTrue((output_dir / "all/dists/noble/InRelease").exists())
             self.assertTrue((output_dir / "alpha/dists/noble/InRelease").exists())
             self.assertTrue((output_dir / "beta/dists/noble/InRelease").exists())
+            self.assertTrue((output_dir / "all/safelibs-all.pref").exists())
+            self.assertTrue((output_dir / "alpha/safelibs-alpha.pref").exists())
+            self.assertTrue((output_dir / "beta/safelibs-beta.pref").exists())
             root_index = (output_dir / "index.html").read_text()
             self.assertIn("https://example.invalid/apt-repo/all", root_index)
             self.assertIn('href="https://example.invalid/apt-repo/alpha/"', root_index)
@@ -733,6 +738,28 @@ class BuildSiteTests(unittest.TestCase):
                     base_url="https://example.invalid/apt-repo/",
                 )
 
+    def test_generate_split_site_requires_artifacts_for_all_configured_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_a = make_deb(tmp_path, "libalpha1", "1.0+safelibs1")
+            template_root = Path(__file__).resolve().parent.parent / "templates"
+            config = {
+                "archive": archive_config(),
+                "repositories": [repo_config("alpha"), repo_config("beta")],
+            }
+
+            with self.assertRaisesRegex(
+                build_site.BuildError, r"missing artifacts for configured repositories: beta"
+            ):
+                build_site.generate_split_site(
+                    config,
+                    {"alpha": [deb_a]},
+                    tmp_path / "site",
+                    repository_template_path=template_root / "index.html",
+                    landing_template_path=template_root / "landing.html",
+                    base_url="https://example.invalid/apt-repo/",
+                )
+
     def test_split_stanzas_discards_empty_chunks(self) -> None:
         raw = "Package: a\nArchitecture: amd64\n\nPackage: b\nArchitecture: amd64\n\n"
         stanzas = build_site.split_stanzas(raw)
@@ -778,6 +805,41 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(
             generate_mock.call_args.kwargs["base_url"], "https://example.invalid/apt-repo/"
         )
+
+    def test_main_skip_build_requires_cached_artifacts_for_all_configured_repositories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "workspace"
+            output = tmp_path / "site"
+            artifact_a = workspace / "artifacts" / "alpha" / "a.deb"
+            artifact_a.parent.mkdir(parents=True)
+            artifact_a.write_text("a")
+            args = argparse.Namespace(
+                config=tmp_path / "repositories.yml",
+                output=output,
+                workspace=workspace,
+                base_url="",
+                skip_build=True,
+            )
+            config = {
+                "archive": archive_config(),
+                "repositories": [repo_config("alpha"), repo_config("beta")],
+            }
+
+            with (
+                mock.patch("tools.build_site.parse_args", return_value=args),
+                mock.patch("tools.build_site.load_config", return_value=config),
+                mock.patch(
+                    "tools.build_site.generate_split_site",
+                    side_effect=build_site.BuildError(
+                        "missing artifacts for configured repositories: beta"
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    build_site.BuildError, r"missing artifacts for configured repositories: beta"
+                ):
+                    build_site.main()
 
     def test_main_build_flow_syncs_and_builds_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

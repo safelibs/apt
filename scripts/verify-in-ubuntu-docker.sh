@@ -48,6 +48,7 @@ if [[ -z "$packages_csv" ]]; then
   exit 1
 fi
 
+preference_name="${key_name}-${REPOSITORY_NAME}.pref"
 repo_uri=
 repo_mode=
 madison_source=
@@ -97,6 +98,8 @@ docker run --rm \
   -e SAFEDEBREPO_VERIFY_REPO_URI="$repo_uri" \
   -e SAFEAPTREPO_VERIFY_KEY_NAME="$key_name" \
   -e SAFEDEBREPO_VERIFY_KEY_NAME="$key_name" \
+  -e SAFEAPTREPO_VERIFY_PREFERENCE_FILE="$preference_name" \
+  -e SAFEDEBREPO_VERIFY_PREFERENCE_FILE="$preference_name" \
   -e SAFEAPTREPO_VERIFY_SUITE="$suite" \
   -e SAFEDEBREPO_VERIFY_SUITE="$suite" \
   -e SAFEAPTREPO_VERIFY_COMPONENT="$component" \
@@ -110,6 +113,7 @@ docker run --rm \
     repo_mode="${SAFEAPTREPO_VERIFY_MODE:-${SAFEDEBREPO_VERIFY_MODE:-}}"
     repo_uri="${SAFEAPTREPO_VERIFY_REPO_URI:-${SAFEDEBREPO_VERIFY_REPO_URI:-}}"
     key_name="${SAFEAPTREPO_VERIFY_KEY_NAME:-${SAFEDEBREPO_VERIFY_KEY_NAME:-}}"
+    preference_name="${SAFEAPTREPO_VERIFY_PREFERENCE_FILE:-${SAFEDEBREPO_VERIFY_PREFERENCE_FILE:-${key_name}.pref}}"
     suite="${SAFEAPTREPO_VERIFY_SUITE:-${SAFEDEBREPO_VERIFY_SUITE:-}}"
     component="${SAFEAPTREPO_VERIFY_COMPONENT:-${SAFEDEBREPO_VERIFY_COMPONENT:-}}"
     apt-get update
@@ -118,11 +122,11 @@ docker run --rm \
     case "$repo_mode" in
       local)
         install -D -m 0644 "/repo/${key_name}.gpg" "/usr/share/keyrings/${key_name}.gpg"
-        install -D -m 0644 "/repo/${key_name}.pref" "/etc/apt/preferences.d/${key_name}.pref"
+        install -D -m 0644 "/repo/${preference_name}" "/etc/apt/preferences.d/${preference_name}"
         ;;
       remote)
         curl -fsSL "${repo_uri}/${key_name}.gpg" -o "/usr/share/keyrings/${key_name}.gpg"
-        curl -fsSL "${repo_uri}/${key_name}.pref" -o "/etc/apt/preferences.d/${key_name}.pref"
+        curl -fsSL "${repo_uri}/${preference_name}" -o "/etc/apt/preferences.d/${preference_name}"
         ;;
       *)
         printf "unsupported verify mode: %s\n" "$repo_mode" >&2

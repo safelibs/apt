@@ -91,7 +91,7 @@ Example install for the aggregate `all` repository:
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
 curl -fsSL https://safelibs.github.io/apt-repo/all/safelibs.gpg | sudo tee /etc/apt/keyrings/safelibs.gpg > /dev/null
-curl -fsSL https://safelibs.github.io/apt-repo/all/safelibs.pref | sudo tee /etc/apt/preferences.d/safelibs-all.pref > /dev/null
+curl -fsSL https://safelibs.github.io/apt-repo/all/safelibs-all.pref | sudo tee /etc/apt/preferences.d/safelibs-all.pref > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/safelibs.gpg] https://safelibs.github.io/apt-repo/all noble main" | sudo tee /etc/apt/sources.list.d/safelibs-all.list > /dev/null
 sudo apt-get update
 ```

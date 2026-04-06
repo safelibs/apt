@@ -502,6 +502,8 @@ def write_preferences_file(
     site_root: Path,
     archive: dict[str, Any],
     package_infos: list[PackageInfo],
+    *,
+    repository_name: str | None = None,
 ) -> None:
     package_names = " ".join(sorted({info.name for info in package_infos}))
     if not package_names:
@@ -517,7 +519,12 @@ def write_preferences_file(
             "",
         ]
     )
-    (site_root / f"{archive['key_name']}.pref").write_text(preference_text)
+    key_name = str(archive["key_name"])
+    (site_root / f"{key_name}.pref").write_text(preference_text)
+    if repository_name:
+        (site_root / f"{repository_file_stem(key_name, repository_name)}.pref").write_text(
+            preference_text
+        )
 
 
 def render_index(
@@ -549,6 +556,7 @@ def render_index(
         repository_name=repository_name,
         repo_url=repo_url,
         key_name=key_name,
+        preferences_download=f"{file_stem}.pref",
         preferences_file=f"{file_stem}.pref",
         list_file=f"{file_stem}.list",
         suite=archive["suite"],
@@ -604,6 +612,7 @@ def render_root_index(
         description=archive["description"],
         fingerprint=fingerprint_display(fingerprint),
         default_repo_url=all_repo_url,
+        preferences_download=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.pref",
         preferences_file=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.pref",
         list_file=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.list",
         repository_cards=repo_cards,
@@ -639,7 +648,7 @@ def generate_site_from_artifacts(
     export_public_key_binary(homedir, fingerprint, output_dir, str(archive["key_name"]))
     write_release_file(output_dir, suite, component, architectures, archive)
     sign_release(output_dir, suite, homedir, fingerprint, passphrase)
-    write_preferences_file(output_dir, archive, infos)
+    write_preferences_file(output_dir, archive, infos, repository_name=repository_name)
     render_index(
         template_path,
         output_dir,
@@ -672,6 +681,11 @@ def generate_split_site(
     if unexpected_names:
         raise BuildError(
             "unexpected artifacts for unknown repositories: " + ", ".join(unexpected_names)
+        )
+    missing_names = [name for name in configured_names if not repository_artifacts.get(name)]
+    if missing_names:
+        raise BuildError(
+            "missing artifacts for configured repositories: " + ", ".join(missing_names)
         )
     repository_names = [name for name in configured_names if repository_artifacts.get(name)]
     all_package_paths = dedupe_paths(
