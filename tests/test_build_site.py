@@ -340,6 +340,8 @@ class BuildSiteTests(unittest.TestCase):
         self.assertNotIn("command", loaded["repositories"][8]["build"])
         self.assertEqual(loaded["repositories"][12]["build"]["mode"], "docker")
         self.assertIn("build-check-install", loaded["repositories"][12]["build"]["command"])
+        self.assertIn("dpkg-architecture -qDEB_HOST_MULTIARCH", loaded["repositories"][12]["build"]["command"])
+        self.assertIn('cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so*', loaded["repositories"][12]["build"]["command"])
         self.assertIn("DEB_BUILD_OPTIONS", loaded["repositories"][12]["build"]["command"])
         self.assertIn("nocheck", loaded["repositories"][12]["build"]["command"])
 

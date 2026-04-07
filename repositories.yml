@@ -261,6 +261,8 @@ repositories:
         meson setup build-check original --prefix "$SAFEAPTREPO_SOURCE/build-check-install"
         meson compile -C build-check
         meson install -C build-check
+        cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so* \
+          build-check-install/lib/
         cd safe
         export DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }nocheck"
         dpkg-buildpackage -us -uc -b
