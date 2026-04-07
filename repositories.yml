@@ -40,6 +40,29 @@ repositories:
     ref: refs/tags/libarchive/04-test
     build:
       mode: safe-debian
+      packages:
+        - clang
+        - lld
+      setup: |
+        export DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }nostrip noautodbgsym"
+        python3 - <<'PY'
+        from pathlib import Path
+
+        build_rs = Path("safe/build.rs")
+        needle = '        println!("cargo:rustc-cdylib-link-arg=-Wl,--export-dynamic-symbol=archive_set_error");\n'
+        text = build_rs.read_text()
+        if needle not in text:
+            raise SystemExit(f"missing expected link export line in {build_rs}")
+        build_rs.write_text(text.replace(needle, ""))
+
+        rules = Path("safe/debian/rules")
+        cargo_build = "cargo build --release"
+        cargo_rustc = "cargo rustc --release -- -Clinker=clang -Clink-arg=-fuse-ld=lld"
+        rules_text = rules.read_text()
+        if cargo_build not in rules_text:
+            raise SystemExit(f"missing expected cargo build line in {rules}")
+        rules.write_text(rules_text.replace(cargo_build, cargo_rustc, 1))
+        PY
       artifact_globs:
         - "*.deb"
 
@@ -48,6 +71,42 @@ repositories:
     ref: refs/tags/libbz2/04-test
     build:
       mode: safe-debian
+      setup: |
+        python3 - <<'PY'
+        from pathlib import Path
+        import shutil
+
+        repo_root = Path(".")
+        copies = {
+            "original/bzip2.c": "safe/bzip2.c",
+            "original/bzip2recover.c": "safe/bzip2recover.c",
+            "original/bzdiff": "safe/bzdiff",
+            "original/bzgrep": "safe/bzgrep",
+            "original/bzmore": "safe/bzmore",
+            "original/bzip2.1": "safe/bzip2.1",
+            "original/bzgrep.1": "safe/bzgrep.1",
+            "original/bzmore.1": "safe/bzmore.1",
+            "original/bzdiff.1": "safe/bzdiff.1",
+            "original/manual.xml": "safe/manual.xml",
+            "original/entities.xml": "safe/entities.xml",
+            "original/manual.html": "safe/manual.html",
+            "original/manual.pdf": "safe/manual.pdf",
+            "original/manual.ps": "safe/manual.ps",
+            "original/debian/bzexe": "safe/debian/bzexe",
+            "original/debian/bzexe.1": "safe/debian/bzexe.1",
+            "original/debian/bzip2-doc.docs": "safe/debian/bzip2-doc.docs",
+            "original/debian/bzip2-doc.doc-base": "safe/debian/bzip2-doc.doc-base",
+            "original/debian/bzip2-doc.info": "safe/debian/bzip2-doc.info",
+        }
+
+        for source_rel, dest_rel in copies.items():
+            source = repo_root / source_rel
+            dest = repo_root / dest_rel
+            if not source.exists():
+                raise SystemExit(f"missing required staged asset: {source}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest)
+        PY
       artifact_globs:
         - "*.deb"
 
@@ -97,6 +156,18 @@ repositories:
     ref: refs/tags/liblzma/04-test
     build:
       mode: safe-debian
+      setup: |
+        python3 - <<'PY'
+        from pathlib import Path
+
+        cargo_toml = Path("safe/Cargo.toml")
+        old = 'crate-type = ["cdylib", "staticlib", "rlib"]\n'
+        new = 'crate-type = ["staticlib", "rlib"]\n'
+        text = cargo_toml.read_text()
+        if old not in text:
+            raise SystemExit(f"missing expected crate-type declaration in {cargo_toml}")
+        cargo_toml.write_text(text.replace(old, new, 1))
+        PY
       artifact_globs:
         - "*.deb"
 
@@ -126,6 +197,20 @@ repositories:
     ref: refs/tags/libsodium/04-test
     build:
       mode: safe-debian
+      packages:
+        - autoconf
+        - automake
+        - libtool
+      setup: |
+        (
+          cd original
+          if [ -f Makefile ]; then
+            make distclean || true
+          fi
+          autoreconf -ivf
+          ./configure --disable-static
+          make -j"$(nproc)"
+        )
       artifact_globs:
         - "*.deb"
 
@@ -134,6 +219,24 @@ repositories:
     ref: refs/tags/libtiff/04-test
     build:
       mode: safe-debian
+      rustup_toolchain: stable-x86_64-unknown-linux-gnu
+      setup: |
+        python3 - <<'PY'
+        from pathlib import Path
+
+        rules = Path("safe/debian/rules")
+        replacements = {
+            "export CARGO_HOME := /home/yans/.cargo\n": "export CARGO_HOME := $(HOME)/.cargo\n",
+            "export RUSTUP_HOME := /home/yans/.rustup\n": "export RUSTUP_HOME := $(HOME)/.rustup\n",
+        }
+
+        text = rules.read_text()
+        for old, new in replacements.items():
+            if old not in text:
+                raise SystemExit(f"missing expected line in {rules}: {old.strip()}")
+            text = text.replace(old, new, 1)
+        rules.write_text(text)
+        PY
       artifact_globs:
         - "*.deb"
 
@@ -141,7 +244,27 @@ repositories:
     github_repo: safelibs/port-libvips
     ref: refs/tags/libvips/04-test
     build:
-      mode: safe-debian
+      mode: docker
+      workdir: .
+      rustup_toolchain: 1.78
+      packages:
+        - build-essential
+        - devscripts
+        - dpkg-dev
+        - equivs
+        - fakeroot
+      command: |
+        cd safe
+        mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
+        cd ..
+        rm -rf build-check build-check-install
+        meson setup build-check original --prefix "$SAFEAPTREPO_SOURCE/build-check-install"
+        meson compile -C build-check
+        meson install -C build-check
+        cd safe
+        export DEB_BUILD_OPTIONS="${DEB_BUILD_OPTIONS:+$DEB_BUILD_OPTIONS }nocheck"
+        dpkg-buildpackage -us -uc -b
+        cp -v ../*.deb "$SAFEAPTREPO_OUTPUT"/
       artifact_globs:
         - "*.deb"
 

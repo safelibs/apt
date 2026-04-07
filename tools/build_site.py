@@ -185,11 +185,13 @@ def max_version(candidates: list[str]) -> str:
 
 def detect_rust_toolchain(workdir: Path) -> str:
     candidates: list[str] = []
+    named_candidates: list[str] = []
     edition_minimums = {
         "2018": "1.31",
         "2021": "1.56",
         "2024": "1.85",
     }
+    has_modern_lockfile = False
 
     for cargo_path in sorted(workdir.rglob("Cargo.toml")):
         for line in cargo_path.read_text(errors="replace").splitlines():
@@ -203,6 +205,14 @@ def detect_rust_toolchain(workdir: Path) -> str:
                 if minimum:
                     candidates.append(minimum)
 
+    for lockfile_path in sorted(workdir.rglob("Cargo.lock")):
+        for line in lockfile_path.read_text(errors="replace").splitlines()[:5]:
+            if line.strip() == "version = 4":
+                has_modern_lockfile = True
+                break
+        if has_modern_lockfile:
+            break
+
     for toolchain_name in ["rust-toolchain.toml", "rust-toolchain"]:
         toolchain_path = workdir / toolchain_name
         if not toolchain_path.exists():
@@ -210,19 +220,29 @@ def detect_rust_toolchain(workdir: Path) -> str:
         for line in toolchain_path.read_text(errors="replace").splitlines():
             channel_match = _RUST_TOOLCHAIN_CHANNEL_RE.match(line)
             if channel_match:
-                candidates.append(channel_match.group(1))
+                channel = channel_match.group(1)
+                if version_key(channel):
+                    candidates.append(channel)
+                else:
+                    named_candidates.append(channel)
                 break
         else:
             channel = toolchain_path.read_text(errors="replace").strip().splitlines()
             if channel:
-                candidates.append(channel[0].strip())
+                named_channel = channel[0].strip()
+                if version_key(named_channel):
+                    candidates.append(named_channel)
+                else:
+                    named_candidates.append(named_channel)
 
     required = max_version(candidates)
-    if not required:
-        return ""
-    if version_key(required) <= version_key(UBUNTU_24_04_RUST_VERSION):
-        return ""
-    return required
+    if required and version_key(required) > version_key(UBUNTU_24_04_RUST_VERSION):
+        return required
+    if has_modern_lockfile:
+        return "stable"
+    if named_candidates:
+        return named_candidates[0]
+    return ""
 
 
 def safe_debian_script() -> str:
