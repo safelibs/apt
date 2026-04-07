@@ -18,8 +18,15 @@ archive = config["archive"]
 repository_name = sys.argv[2]
 if repository_name == "all":
     packages = []
+    packages_complete = True
     for entry in config["repositories"]:
-        packages.extend(entry.get("verify_packages", []))
+        verify_packages = entry.get("verify_packages", [])
+        if verify_packages:
+            packages.extend(verify_packages)
+            continue
+        packages_complete = False
+    if not packages_complete:
+        packages = []
 else:
     entry = next(
         (candidate for candidate in config["repositories"] if candidate["name"] == repository_name),
