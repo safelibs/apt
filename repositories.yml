@@ -18,6 +18,43 @@ archive:
     - rsync
     - xz-utils
 
+testing:
+  discover:
+    github_org: safelibs
+    repository_prefix: port-
+  default_build:
+    mode: safe-debian
+    artifact_globs:
+      - "*.deb"
+  allow_build_failures: true
+  repository_overrides:
+    - name: libc6
+      build:
+        mode: docker
+        workdir: safe
+        rustup_toolchain: stable
+        packages:
+          - build-essential
+        command: |
+          cargo run -p xtask -- package-deb --out "$SAFEAPTREPO_OUTPUT/debs"
+          cp -v "$SAFEAPTREPO_OUTPUT"/debs/*.deb "$SAFEAPTREPO_OUTPUT"/
+        artifact_globs:
+          - "*.deb"
+
+    - name: libjansson
+      build:
+        mode: docker
+        workdir: .
+        rustup_toolchain: stable
+        packages:
+          - build-essential
+          - dpkg-dev
+        command: |
+          safe/scripts/build-deb.sh
+          cp -v safe/dist/*.deb "$SAFEAPTREPO_OUTPUT"/
+        artifact_globs:
+          - "*.deb"
+
 repositories:
   - name: cjson
     github_repo: safelibs/port-cjson
@@ -116,6 +153,30 @@ repositories:
     build:
       mode: checkout-artifacts
       workdir: .
+      artifact_globs:
+        - "*.deb"
+
+  - name: libexif
+    github_repo: safelibs/port-libexif
+    ref: refs/tags/libexif/04-test
+    build:
+      mode: safe-debian
+      artifact_globs:
+        - "*.deb"
+
+  - name: libjansson
+    github_repo: safelibs/port-libjansson
+    ref: refs/tags/libjansson/04-test
+    build:
+      mode: docker
+      workdir: .
+      rustup_toolchain: stable
+      packages:
+        - build-essential
+        - dpkg-dev
+      command: |
+        safe/scripts/build-deb.sh
+        cp -v safe/dist/*.deb "$SAFEAPTREPO_OUTPUT"/
       artifact_globs:
         - "*.deb"
 

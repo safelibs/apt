@@ -319,6 +319,8 @@ class BuildSiteTests(unittest.TestCase):
                 "libarchive",
                 "libbz2",
                 "libcsv",
+                "libexif",
+                "libjansson",
                 "libjpeg-turbo",
                 "libjson",
                 "liblzma",
@@ -336,14 +338,14 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(loaded["repositories"][0]["build"]["mode"], "safe-debian")
         self.assertEqual(loaded["repositories"][4]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", loaded["repositories"][4]["build"])
-        self.assertEqual(loaded["repositories"][8]["build"]["mode"], "checkout-artifacts")
-        self.assertNotIn("command", loaded["repositories"][8]["build"])
-        self.assertEqual(loaded["repositories"][12]["build"]["mode"], "docker")
-        self.assertIn("build-check-install", loaded["repositories"][12]["build"]["command"])
-        self.assertIn("dpkg-architecture -qDEB_HOST_MULTIARCH", loaded["repositories"][12]["build"]["command"])
-        self.assertIn('cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so*', loaded["repositories"][12]["build"]["command"])
-        self.assertIn("DEB_BUILD_OPTIONS", loaded["repositories"][12]["build"]["command"])
-        self.assertIn("nocheck", loaded["repositories"][12]["build"]["command"])
+        self.assertEqual(loaded["repositories"][10]["build"]["mode"], "checkout-artifacts")
+        self.assertNotIn("command", loaded["repositories"][10]["build"])
+        self.assertEqual(loaded["repositories"][14]["build"]["mode"], "docker")
+        self.assertIn("build-check-install", loaded["repositories"][14]["build"]["command"])
+        self.assertIn("dpkg-architecture -qDEB_HOST_MULTIARCH", loaded["repositories"][14]["build"]["command"])
+        self.assertIn('cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so*', loaded["repositories"][14]["build"]["command"])
+        self.assertIn("DEB_BUILD_OPTIONS", loaded["repositories"][14]["build"]["command"])
+        self.assertIn("nocheck", loaded["repositories"][14]["build"]["command"])
 
     def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
