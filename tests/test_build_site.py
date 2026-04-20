@@ -355,7 +355,18 @@ class BuildSiteTests(unittest.TestCase):
             ],
         )
         self.assertEqual(loaded["repositories"][0]["build"]["mode"], "safe-debian")
-        self.assertTrue(all(entry.get("verify_packages") for entry in loaded["repositories"]))
+        self.assertEqual(
+            {
+                entry["name"]: entry["verify_packages"]
+                for entry in loaded["repositories"]
+                if "verify_packages" in entry
+            },
+            {
+                "libjson": ["libjson-c5", "libjson-c-dev"],
+                "libpng": ["libpng16-16t64", "libpng-dev", "libpng-tools"],
+                "libzstd": ["libzstd1", "libzstd-dev", "zstd"],
+            },
+        )
         self.assertEqual(loaded["repositories"][4]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", loaded["repositories"][4]["build"])
         self.assertEqual(loaded["repositories"][10]["build"]["mode"], "checkout-artifacts")

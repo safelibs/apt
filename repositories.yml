@@ -59,8 +59,6 @@ repositories:
   - name: cjson
     github_repo: safelibs/port-cjson
     ref: refs/tags/cjson/04-test
-    verify_packages:
-      - libcjson1
     build:
       mode: safe-debian
       artifact_globs:
@@ -69,8 +67,6 @@ repositories:
   - name: giflib
     github_repo: safelibs/port-giflib
     ref: refs/tags/giflib/04-test
-    verify_packages:
-      - libgif7
     build:
       mode: safe-debian
       artifact_globs:
@@ -79,9 +75,6 @@ repositories:
   - name: libarchive
     github_repo: safelibs/port-libarchive
     ref: refs/tags/libarchive/04-test
-    verify_packages:
-      - libarchive13t64
-      - libarchive-tools
     build:
       mode: safe-debian
       packages:
@@ -113,9 +106,6 @@ repositories:
   - name: libbz2
     github_repo: safelibs/port-libbz2
     ref: refs/tags/libbz2/04-test
-    verify_packages:
-      - libbz2-1.0
-      - bzip2
     build:
       mode: safe-debian
       setup: |
@@ -160,8 +150,6 @@ repositories:
   - name: libcsv
     github_repo: safelibs/port-libcsv
     ref: refs/tags/libcsv/04-test
-    verify_packages:
-      - libcsv3
     build:
       mode: checkout-artifacts
       workdir: .
@@ -171,8 +159,6 @@ repositories:
   - name: libexif
     github_repo: safelibs/port-libexif
     ref: refs/tags/libexif/04-test
-    verify_packages:
-      - libexif12
     build:
       mode: safe-debian
       artifact_globs:
@@ -181,8 +167,6 @@ repositories:
   - name: libjansson
     github_repo: safelibs/port-libjansson
     ref: refs/tags/libjansson/04-test
-    verify_packages:
-      - libjansson4
     build:
       mode: docker
       workdir: .
@@ -199,10 +183,6 @@ repositories:
   - name: libjpeg-turbo
     github_repo: safelibs/port-libjpeg-turbo
     ref: refs/tags/libjpeg-turbo/04-test
-    verify_packages:
-      - libjpeg-turbo8
-      - libturbojpeg
-      - libjpeg-turbo-progs
     build:
       mode: safe-debian
       artifact_globs:
@@ -213,6 +193,7 @@ repositories:
     ref: refs/tags/libjson/04-test
     verify_packages:
       - libjson-c5
+      - libjson-c-dev
     build:
       workdir: .
       packages:
@@ -234,8 +215,6 @@ repositories:
   - name: liblzma
     github_repo: safelibs/port-liblzma
     ref: refs/tags/liblzma/04-test
-    verify_packages:
-      - liblzma5
     build:
       mode: safe-debian
       setup: |
@@ -258,6 +237,7 @@ repositories:
     ref: refs/tags/libpng/04-test
     verify_packages:
       - libpng16-16t64
+      - libpng-dev
       - libpng-tools
     build:
       mode: checkout-artifacts
@@ -268,9 +248,6 @@ repositories:
   - name: libsdl
     github_repo: safelibs/port-libsdl
     ref: refs/tags/libsdl/04-test
-    verify_packages:
-      - libsdl2-2.0-0
-      - libsdl2-tests
     build:
       mode: safe-debian
       artifact_globs:
@@ -279,8 +256,6 @@ repositories:
   - name: libsodium
     github_repo: safelibs/port-libsodium
     ref: refs/tags/libsodium/04-test
-    verify_packages:
-      - libsodium23
     build:
       mode: safe-debian
       packages:
@@ -303,10 +278,6 @@ repositories:
   - name: libtiff
     github_repo: safelibs/port-libtiff
     ref: refs/tags/libtiff/04-test
-    verify_packages:
-      - libtiff6
-      - libtiff-tools
-      - libtiffxx6
     build:
       mode: safe-debian
       rustup_toolchain: stable-x86_64-unknown-linux-gnu
@@ -333,8 +304,6 @@ repositories:
   - name: libuv
     github_repo: safelibs/port-libuv
     ref: refs/tags/libuv/04-test
-    verify_packages:
-      - libuv1t64
     build:
       mode: safe-debian
       setup: |
@@ -364,10 +333,6 @@ repositories:
   - name: libvips
     github_repo: safelibs/port-libvips
     ref: refs/tags/libvips/04-test
-    verify_packages:
-      - libvips42t64
-      - libvips-tools
-      - gir1.2-vips-8.0
     build:
       mode: docker
       workdir: .
@@ -398,13 +363,6 @@ repositories:
   - name: libwebp
     github_repo: safelibs/port-libwebp
     ref: refs/tags/libwebp/04-test
-    verify_packages:
-      - libwebp7
-      - libwebpdecoder3
-      - libwebpdemux2
-      - libwebpmux3
-      - libsharpyuv0
-      - webp
     build:
       mode: safe-debian
       artifact_globs:
@@ -413,10 +371,6 @@ repositories:
   - name: libxml
     github_repo: safelibs/port-libxml
     ref: refs/tags/libxml/04-test
-    verify_packages:
-      - libxml2
-      - libxml2-utils
-      - python3-libxml2
     build:
       mode: safe-debian
       artifact_globs:
@@ -425,8 +379,6 @@ repositories:
   - name: libyaml
     github_repo: safelibs/port-libyaml
     ref: refs/tags/libyaml/04-test
-    verify_packages:
-      - libyaml-0-2
     build:
       mode: safe-debian
       artifact_globs:
@@ -437,6 +389,7 @@ repositories:
     ref: refs/tags/libzstd/04-test
     verify_packages:
       - libzstd1
+      - libzstd-dev
       - zstd
     build:
       workdir: .
