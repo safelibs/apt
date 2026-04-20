@@ -103,6 +103,23 @@ class BuildSiteTests(unittest.TestCase):
         self.assertIn("stdout line", message)
         self.assertIn("stderr line", message)
 
+    def test_run_truncates_large_captured_failures(self) -> None:
+        error = subprocess.CalledProcessError(
+            returncode=2,
+            cmd=["docker", "run"],
+            output="early stdout\n" + ("x" * (build_site.MAX_FAILURE_OUTPUT_CHARS + 20)),
+            stderr="early stderr\n" + ("y" * (build_site.MAX_FAILURE_OUTPUT_CHARS + 20)),
+        )
+        with mock.patch("tools.build_site.subprocess.run", side_effect=error):
+            with self.assertRaises(build_site.BuildError) as ctx:
+                build_site.run(["docker", "run"], capture_output=True)
+
+        message = str(ctx.exception)
+        self.assertIn("[stdout truncated", message)
+        self.assertIn("[stderr truncated", message)
+        self.assertNotIn("early stdout", message)
+        self.assertNotIn("early stderr", message)
+
     def test_load_config_rejects_non_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "repositories.yml"
@@ -653,6 +670,7 @@ class BuildSiteTests(unittest.TestCase):
 
             def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 self.assertEqual(args[:2], ["docker", "run"])
+                self.assertTrue(kwargs["capture_output"])
                 docker_script = args[-1]
                 self.assertIn("apt-get install -y --no-install-recommends ca-certificates git make curl", docker_script)
                 self.assertIn("rustc --version", docker_script)
@@ -744,6 +762,7 @@ class BuildSiteTests(unittest.TestCase):
 
             def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 self.assertEqual(args[:2], ["docker", "run"])
+                self.assertTrue(kwargs["capture_output"])
                 docker_script = args[-1]
                 self.assertIn(
                     "apt-get install -y --no-install-recommends ca-certificates file git jq python3 rsync xz-utils curl build-essential devscripts dpkg-dev equivs fakeroot",
@@ -802,6 +821,7 @@ class BuildSiteTests(unittest.TestCase):
 
             def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 self.assertEqual(args[:2], ["docker", "run"])
+                self.assertTrue(kwargs["capture_output"])
                 docker_script = args[-1]
                 self.assertIn("--default-toolchain stable", docker_script)
                 self.assertIn("rustc --version", docker_script)
@@ -1209,6 +1229,75 @@ class BuildSiteTests(unittest.TestCase):
                     build_site.BuildError, r"missing artifacts for configured repositories: beta"
                 ):
                     build_site.main()
+
+    def test_main_skip_build_generates_stable_and_testing_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "workspace"
+            output = tmp_path / "site"
+            stable_artifact_dir = workspace / "artifacts" / "alpha"
+            testing_artifact_dir = workspace / "artifacts" / "testing" / "beta"
+            stable_artifact_dir.mkdir(parents=True)
+            testing_artifact_dir.mkdir(parents=True)
+            make_deb(stable_artifact_dir, "libalpha1", "1.0+safelibs1")
+            make_deb(testing_artifact_dir, "libbeta1", "2.0+safelibs1")
+            config_path = tmp_path / "repositories.yml"
+            write_config(
+                config_path,
+                {
+                    "archive": archive_config(),
+                    "repositories": [repo_config("alpha")],
+                    "testing": {
+                        "discover": {
+                            "github_org": "safelibs",
+                            "repository_prefix": "port-",
+                        },
+                        "default_build": {
+                            "mode": "safe-debian",
+                            "artifact_globs": ["*.deb"],
+                        },
+                        "allow_build_failures": True,
+                    },
+                },
+            )
+            args = argparse.Namespace(
+                config=config_path,
+                output=output,
+                workspace=workspace,
+                base_url="https://example.invalid/apt-repo/",
+                skip_build=True,
+            )
+
+            with (
+                mock.patch("tools.build_site.parse_args", return_value=args),
+                mock.patch(
+                    "tools.build_site.discover_port_repositories",
+                    return_value=[
+                        {
+                            "name": "beta",
+                            "github_repo": "safelibs/port-beta",
+                            "ref": "refs/heads/main",
+                        }
+                    ],
+                ),
+            ):
+                result = build_site.main()
+
+            self.assertEqual(result, 0)
+            self.assertTrue((output / "all/dists/noble/InRelease").exists())
+            self.assertTrue((output / "testing/all/dists/noble/InRelease").exists())
+            manifest = json.loads((output / "manifest.json").read_text())
+            channel_paths = [
+                (channel["name"], [repo["path"] for repo in channel["repositories"]])
+                for channel in manifest["channels"]
+            ]
+            self.assertEqual(
+                channel_paths,
+                [
+                    ("stable", ["all", "alpha"]),
+                    ("testing", ["testing/all", "testing/beta"]),
+                ],
+            )
 
     def test_main_build_flow_syncs_and_builds_repositories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

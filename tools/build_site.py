@@ -22,6 +22,7 @@ ALL_REPOSITORY_NAME = "all"
 STABLE_CHANNEL_NAME = "stable"
 TESTING_CHANNEL_NAME = "testing"
 UBUNTU_24_04_RUST_VERSION = "1.75"
+MAX_FAILURE_OUTPUT_CHARS = 12000
 
 
 class BuildError(RuntimeError):
@@ -66,8 +67,24 @@ def run(
             capture_output=capture_output,
         )
     except subprocess.CalledProcessError as exc:
+        def output_part(label: str, text: str | None) -> str:
+            if not text or not text.strip():
+                return ""
+            stripped = text.strip()
+            if len(stripped) <= MAX_FAILURE_OUTPUT_CHARS:
+                return stripped
+            return (
+                f"[{label} truncated to last {MAX_FAILURE_OUTPUT_CHARS} chars]\n"
+                f"{stripped[-MAX_FAILURE_OUTPUT_CHARS:]}"
+            )
+
         details = "\n".join(
-            part.strip() for part in (exc.stdout or "", exc.stderr or "") if part.strip()
+            part
+            for part in (
+                output_part("stdout", exc.stdout),
+                output_part("stderr", exc.stderr),
+            )
+            if part
         )
         location = f" (cwd={cwd})" if cwd is not None else ""
         raise BuildError(f"{' '.join(args)} failed{location}: {details or exc}") from exc
@@ -532,6 +549,7 @@ def build_repo(
             docker_script,
         ],
         env=env,
+        capture_output=True,
     )
 
     artifacts: list[Path] = []
@@ -1164,6 +1182,7 @@ def build_repository_entries(
     repository_artifacts: dict[str, list[Path]] = {}
     built_entries: list[dict[str, Any]] = []
     for entry in entries:
+        print(f"building {channel_name}/{entry['name']}", file=sys.stderr)
         try:
             source_dir = sync_repo(entry, source_root)
             artifacts = build_repo(
@@ -1183,6 +1202,11 @@ def build_repository_entries(
             continue
         repository_artifacts[str(entry["name"])] = artifacts
         built_entries.append(entry)
+        print(
+            f"built {channel_name}/{entry['name']}: {len(artifacts)} artifact"
+            f"{'s' if len(artifacts) != 1 else ''}",
+            file=sys.stderr,
+        )
     return repository_artifacts, built_entries
 
 
