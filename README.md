@@ -3,8 +3,9 @@
 This repository builds and publishes the static SafeLibs apt repository for
 Ubuntu 24.04 on GitHub Pages.
 
-As of April 7, 2026, the checked-in [`repositories.yml`](./repositories.yml)
-tracks every current `safelibs/port-*` repo that exposes a `04-test` tag:
+As of April 20, 2026, the checked-in stable channel in
+[`repositories.yml`](./repositories.yml) tracks every current
+`safelibs/port-*` repo that exposes a `04-test` tag:
 
 - `safelibs/port-cjson` at `refs/tags/cjson/04-test`
 - `safelibs/port-giflib` at `refs/tags/giflib/04-test`
@@ -24,10 +25,15 @@ tracks every current `safelibs/port-*` repo that exposes a `04-test` tag:
 - `safelibs/port-libyaml` at `refs/tags/libyaml/04-test`
 - `safelibs/port-libzstd` at `refs/tags/libzstd/04-test`
 
+The testing channel is discovered at build time from non-archived
+`safelibs/port-*` repos. It checks out each repo's current default branch and
+publishes the latest package artifacts that can be built as safe debs,
+regardless of whether the repo has a `04-test` tag.
+
 ## Layout
 
 - `repositories.yml`: source of truth for which `safelibs/port-*` repos to pull
-  and how to build them
+  for stable, plus testing-channel discovery and build overrides
 - `tools/build_site.py`: clone, build, index, sign, and render the Pages site
 - `scripts/verify-in-ubuntu-docker.sh`: end-to-end `apt` verification in an
   Ubuntu 24.04 container
@@ -57,11 +63,15 @@ that need them.
 
 The generated site now publishes:
 
-- `/all/`: the aggregate repository with every published SafeLibs package
-- `/<library>/`: one repository per configured library, for example
+- `/all/`: the stable aggregate repository with every tagged SafeLibs package
+- `/<library>/`: one stable repository per tagged library, for example
   `/libjson/`, `/libpng/`, and `/libzstd/`
+- `/testing/all/`: the testing aggregate repository with every latest
+  default-branch SafeLibs package that built successfully
+- `/testing/<library>/`: one testing repository per latest buildable port
 - `/`: a landing page that links to the split repositories; installs should use
-  `/all/` or a library-specific subdirectory
+  `/all/`, a library-specific subdirectory, `/testing/all/`, or a testing
+  library-specific subdirectory
 
 ## Local Usage
 
@@ -91,14 +101,16 @@ Verify the generated repository in Ubuntu 24.04 Docker:
 make verify-docker
 ```
 
-`make verify-docker` verifies the explicit `/all/` repository and each
-configured per-library repository. When a manifest entry omits
+`make verify-docker` verifies the explicit stable `/all/` repository, each
+stable per-library repository, and any generated testing repositories. When a
+manifest entry omits
 `verify_packages`, the verification script derives the package set directly
 from the published `Packages` index for that repository.
 
 The site output lands in `site/`, with installable repositories under
-`site/all/` and `site/<library>/`. If `SAFEAPTREPO_GPG_PRIVATE_KEY` is not set,
-the builder generates an ephemeral signing key for local/CI verification.
+`site/all/`, `site/<library>/`, `site/testing/all/`, and
+`site/testing/<library>/`. If `SAFEAPTREPO_GPG_PRIVATE_KEY` is not set, the
+builder generates an ephemeral signing key for local/CI verification.
 
 Ubuntu 24.04 already ships the distro packages that these SafeLibs ports
 replace. The generated site therefore also publishes `safelibs.pref`, which
@@ -118,6 +130,16 @@ sudo apt-get update
 To install just one port, swap `/all/` for the library-specific repository such
 as `/libjson/`, and use a matching local filename like
 `/etc/apt/preferences.d/safelibs-libjson.pref`.
+
+To install the testing aggregate, use `/testing/all/` and the testing preference
+file name:
+
+```bash
+curl -fsSL https://safelibs.github.io/apt-repo/testing/all/safelibs.gpg | sudo tee /etc/apt/keyrings/safelibs.gpg > /dev/null
+curl -fsSL https://safelibs.github.io/apt-repo/testing/all/safelibs-testing-all.pref | sudo tee /etc/apt/preferences.d/safelibs-testing-all.pref > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/safelibs.gpg] https://safelibs.github.io/apt-repo/testing/all noble main" | sudo tee /etc/apt/sources.list.d/safelibs-testing-all.list > /dev/null
+sudo apt-get update
+```
 
 ## Signing
 

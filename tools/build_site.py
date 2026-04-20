@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,8 @@ import yaml
 
 
 ALL_REPOSITORY_NAME = "all"
+STABLE_CHANNEL_NAME = "stable"
+TESTING_CHANNEL_NAME = "testing"
 UBUNTU_24_04_RUST_VERSION = "1.75"
 
 
@@ -35,7 +39,10 @@ class PackageInfo:
 
 @dataclass(frozen=True)
 class PublishedRepository:
+    channel: str
     name: str
+    path: str
+    repository_id: str
     url: str
     package_infos: tuple[PackageInfo, ...]
 
@@ -64,6 +71,20 @@ def run(
         )
         location = f" (cwd={cwd})" if cwd is not None else ""
         raise BuildError(f"{' '.join(args)} failed{location}: {details or exc}") from exc
+
+
+def validate_build_config(path: Path, build: Any, context: str) -> None:
+    if not isinstance(build, dict):
+        raise BuildError(f"{path} {context} must define build")
+    artifact_globs = build.get("artifact_globs")
+    if not isinstance(artifact_globs, list) or not artifact_globs:
+        raise BuildError(f"{path} {context} build must define artifact_globs")
+    if not all(str(pattern).strip() for pattern in artifact_globs):
+        raise BuildError(f"{path} {context} build artifact_globs must be non-empty")
+
+    mode = str(build.get("mode") or "docker")
+    if mode == "docker" and not str(build.get("command") or "").strip():
+        raise BuildError(f"{path} {context} docker build must define command")
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -109,18 +130,46 @@ def load_config(path: Path) -> dict[str, Any]:
             raise BuildError(f"{path} defines duplicate repository name: {repository_name}")
         seen_repository_names.add(repository_name)
 
-        build = entry.get("build")
-        if not isinstance(build, dict):
-            raise BuildError(f"{path} repository #{index} must define build")
-        artifact_globs = build.get("artifact_globs")
-        if not isinstance(artifact_globs, list) or not artifact_globs:
-            raise BuildError(f"{path} repository #{index} build must define artifact_globs")
-        if not all(str(pattern).strip() for pattern in artifact_globs):
-            raise BuildError(f"{path} repository #{index} build artifact_globs must be non-empty")
+        validate_build_config(path, entry.get("build"), f"repository #{index}")
 
-        mode = str(build.get("mode") or "docker")
-        if mode == "docker" and not str(build.get("command") or "").strip():
-            raise BuildError(f"{path} repository #{index} docker build must define command")
+    testing = data.get("testing")
+    if testing is not None:
+        if not isinstance(testing, dict):
+            raise BuildError(f"{path} testing must be a YAML mapping")
+        discover = testing.get("discover", {})
+        if discover is not None and not isinstance(discover, dict):
+            raise BuildError(f"{path} testing discover must be a YAML mapping")
+        default_build = testing.get(
+            "default_build",
+            {"mode": "safe-debian", "artifact_globs": ["*.deb"]},
+        )
+        validate_build_config(path, default_build, "testing default_build")
+
+        overrides = testing.get("repository_overrides", [])
+        if overrides is None:
+            overrides = []
+        if not isinstance(overrides, list):
+            raise BuildError(f"{path} testing repository_overrides must be a YAML list")
+        seen_override_names: set[str] = set()
+        for index, override in enumerate(overrides, start=1):
+            if not isinstance(override, dict):
+                raise BuildError(
+                    f"{path} testing repository override #{index} must be a YAML mapping"
+                )
+            override_name = str(override.get("name") or "").strip()
+            if not override_name:
+                raise BuildError(f"{path} testing repository override #{index} must define name")
+            if override_name in seen_override_names:
+                raise BuildError(
+                    f"{path} testing defines duplicate repository override: {override_name}"
+                )
+            seen_override_names.add(override_name)
+            if "build" in override:
+                validate_build_config(
+                    path,
+                    override["build"],
+                    f"testing repository override #{index}",
+                )
     return data
 
 
@@ -156,13 +205,111 @@ def clone_or_update_repo(repo_name: str, target_dir: Path) -> None:
     raise BuildError("gh is required to clone private safelibs repositories")
 
 
+def checkout_ref_name(ref: str) -> str:
+    if ref.startswith("refs/heads/"):
+        return f"origin/{ref.removeprefix('refs/heads/')}"
+    return ref
+
+
 def sync_repo(entry: dict[str, Any], source_root: Path) -> Path:
     repo_name = str(entry["github_repo"])
     ref = str(entry["ref"])
     target_dir = source_root / str(entry["name"])
     clone_or_update_repo(repo_name, target_dir)
-    run(["git", "-C", str(target_dir), "checkout", "--detach", ref])
+    run(["git", "-C", str(target_dir), "checkout", "--detach", checkout_ref_name(ref)])
     return target_dir
+
+
+def discover_port_repositories(github_org: str, repository_prefix: str) -> list[dict[str, str]]:
+    result = run(
+        [
+            "gh",
+            "repo",
+            "list",
+            github_org,
+            "--limit",
+            "1000",
+            "--json",
+            "name,defaultBranchRef,isArchived",
+        ],
+        capture_output=True,
+    )
+    try:
+        repos = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise BuildError("failed to parse GitHub repository discovery output") from exc
+
+    discovered: list[dict[str, str]] = []
+    for repo in repos:
+        if not isinstance(repo, dict):
+            continue
+        repo_name = str(repo.get("name") or "")
+        if not repo_name.startswith(repository_prefix) or repo.get("isArchived"):
+            continue
+        default_branch = repo.get("defaultBranchRef") or {}
+        if not isinstance(default_branch, dict):
+            continue
+        branch_name = str(default_branch.get("name") or "").strip()
+        if not branch_name:
+            continue
+        discovered.append(
+            {
+                "name": repo_name.removeprefix(repository_prefix),
+                "github_repo": f"{github_org}/{repo_name}",
+                "ref": f"refs/heads/{branch_name}",
+            }
+        )
+    return sorted(discovered, key=lambda item: item["name"])
+
+
+def merge_build_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    merged.update(override)
+    return merged
+
+
+def resolve_testing_repositories(config: dict[str, Any]) -> list[dict[str, Any]]:
+    testing = config.get("testing")
+    if not isinstance(testing, dict) or testing.get("enabled") is False:
+        return []
+
+    discover = testing.get("discover") or {}
+    github_org = str(discover.get("github_org") or "safelibs")
+    repository_prefix = str(discover.get("repository_prefix") or "port-")
+    default_build = dict(
+        testing.get("default_build")
+        or {"mode": "safe-debian", "artifact_globs": ["*.deb"]}
+    )
+    discovered_entries = discover_port_repositories(github_org, repository_prefix)
+    entries_by_name: dict[str, dict[str, Any]] = {
+        entry["name"]: {**entry, "build": dict(default_build)}
+        for entry in discovered_entries
+    }
+
+    overrides = testing.get("repository_overrides") or []
+    for override in overrides:
+        name = str(override["name"])
+        base_entry = entries_by_name.get(
+            name,
+            {
+                "name": name,
+                "github_repo": str(
+                    override.get("github_repo") or f"{github_org}/{repository_prefix}{name}"
+                ),
+                "ref": str(override.get("ref") or "refs/heads/main"),
+                "build": dict(default_build),
+            },
+        )
+        merged_entry = dict(base_entry)
+        for key, value in override.items():
+            if key in {"build", "name"}:
+                continue
+            merged_entry[key] = value
+        if "build" in override:
+            merged_entry["build"] = merge_build_config(base_entry["build"], override["build"])
+        entries_by_name[name] = merged_entry
+
+    return [entries_by_name[name] for name in sorted(entries_by_name)]
 
 
 _RUST_VERSION_RE = re.compile(r'^\s*rust-version\s*=\s*"([^"]+)"\s*$')
@@ -291,6 +438,8 @@ def build_repo(
         return dedupe_paths(artifacts)
 
     if mode == "safe-debian":
+        if not (workdir / "debian" / "control").exists():
+            raise BuildError(f"missing debian/control for {entry['name']}: {workdir}")
         if "curl" not in packages:
             packages.append("curl")
         packages = dedupe(
@@ -598,8 +747,30 @@ def repository_file_stem(key_name: str, repository_name: str) -> str:
     return f"{key_name}-{repository_name}"
 
 
-def repository_lead_text(repository_name: str) -> str:
-    if repository_name == ALL_REPOSITORY_NAME:
+def repository_path(path_prefix: str, repository_name: str) -> str:
+    clean_prefix = path_prefix.strip("/")
+    if not clean_prefix:
+        return repository_name
+    return f"{clean_prefix}/{repository_name}"
+
+
+def repository_id(path_prefix: str, repository_name: str) -> str:
+    return repository_path(path_prefix, repository_name).replace("/", "-")
+
+
+def repository_lead_text(
+    repository_name: str,
+    *,
+    channel_name: str,
+    is_aggregate: bool,
+) -> str:
+    if channel_name == TESTING_CHANNEL_NAME:
+        target = "the full SafeLibs package set" if is_aggregate else repository_name
+        return (
+            f"Latest buildable SafeLibs packages for {target}, built from the current "
+            "default branch of the matching port repository."
+        )
+    if is_aggregate:
         return (
             "Memory-safe drop-in packages for the full SafeLibs package set, "
             "published as a signed static apt repository for Ubuntu 24.04."
@@ -615,7 +786,7 @@ def write_preferences_file(
     archive: dict[str, Any],
     package_infos: list[PackageInfo],
     *,
-    repository_name: str | None = None,
+    repository_id: str | None = None,
 ) -> None:
     package_names = " ".join(sorted({info.name for info in package_infos}))
     if not package_names:
@@ -633,8 +804,8 @@ def write_preferences_file(
     )
     key_name = str(archive["key_name"])
     (site_root / f"{key_name}.pref").write_text(preference_text)
-    if repository_name:
-        (site_root / f"{repository_file_stem(key_name, repository_name)}.pref").write_text(
+    if repository_id:
+        (site_root / f"{repository_file_stem(key_name, repository_id)}.pref").write_text(
             preference_text
         )
 
@@ -647,6 +818,9 @@ def render_index(
     fingerprint: str,
     repo_url: str,
     repository_name: str,
+    repository_id: str,
+    channel_name: str,
+    is_aggregate: bool,
 ) -> None:
     package_items = "\n".join(
         "          <li><code>"
@@ -655,16 +829,21 @@ def render_index(
     )
     key_name = str(archive["key_name"])
     repo_url = repo_url.rstrip("/")
-    file_stem = repository_file_stem(key_name, repository_name)
+    file_stem = repository_file_stem(key_name, repository_id)
+    channel_label = channel_name.capitalize()
     html_text = template_path.read_text().format(
         page_title=f"SafeLibs Apt Repository ({repository_name})",
         chip_text=(
-            "Aggregate apt repository"
-            if repository_name == ALL_REPOSITORY_NAME
-            else f"Single-library apt repository: {repository_name}"
+            f"{channel_label} aggregate apt repository"
+            if is_aggregate
+            else f"{channel_label} single-library apt repository: {repository_name}"
         ),
         heading="SafeLibs Apt Repository",
-        lead_text=repository_lead_text(repository_name),
+        lead_text=repository_lead_text(
+            repository_name,
+            channel_name=channel_name,
+            is_aggregate=is_aggregate,
+        ),
         repository_name=repository_name,
         repo_url=repo_url,
         key_name=key_name,
@@ -691,15 +870,28 @@ def render_root_index(
     fingerprint: str,
     base_url: str,
 ) -> None:
-    all_repo_url = join_url(base_url, ALL_REPOSITORY_NAME)
     key_name = str(archive["key_name"])
-    all_repo = next(repo for repo in repositories if repo.name == ALL_REPOSITORY_NAME)
+    all_repo = next(
+        (
+            repo
+            for repo in repositories
+            if repo.channel == STABLE_CHANNEL_NAME and repo.name == ALL_REPOSITORY_NAME
+        ),
+        next(repo for repo in repositories if repo.name == ALL_REPOSITORY_NAME),
+    )
+    all_repo_url = all_repo.url
     repo_cards = "\n".join(
         "\n".join(
             [
                 '      <article class="panel repo-card stack">',
-                f'        <div class="chip">{html.escape("Aggregate repo" if repo.name == ALL_REPOSITORY_NAME else "Per-library repo")}</div>',
+                "        <div class=\"chip\">"
+                + html.escape(
+                    f"{repo.channel.capitalize()} "
+                    + ("aggregate repo" if repo.name == ALL_REPOSITORY_NAME else "per-library repo")
+                )
+                + "</div>",
                 f'        <h3><a href="{html.escape(repo.url)}/">{html.escape(repo.name)}</a></h3>',
+                f"        <p><code>/{html.escape(repo.path)}/</code></p>",
                 f"        <p>{len(repo.package_infos)} published package{'s' if len(repo.package_infos) != 1 else ''}.</p>",
                 "        <p><code>"
                 + html.escape(", ".join(info.name for info in sorted(repo.package_infos, key=lambda item: item.name)))
@@ -734,6 +926,42 @@ def render_root_index(
     (site_root / ".nojekyll").write_text("")
 
 
+def write_manifest(
+    site_root: Path,
+    archive: dict[str, Any],
+    repositories: list[PublishedRepository],
+) -> None:
+    channels: dict[str, list[dict[str, Any]]] = {}
+    for repo in repositories:
+        channels.setdefault(repo.channel, []).append(
+            {
+                "name": repo.name,
+                "path": repo.path,
+                "url": repo.url,
+                "packages": [
+                    {"name": info.name, "version": info.version, "architecture": info.architecture}
+                    for info in sorted(repo.package_infos, key=lambda item: item.name)
+                ],
+            }
+        )
+
+    manifest = {
+        "archive": {
+            "suite": archive["suite"],
+            "component": archive["component"],
+            "key_name": archive["key_name"],
+        },
+        "channels": [
+            {
+                "name": channel_name,
+                "repositories": sorted(repos, key=lambda item: item["path"]),
+            }
+            for channel_name, repos in sorted(channels.items())
+        ],
+    }
+    (site_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
 def generate_site_from_artifacts(
     config: dict[str, Any],
     package_paths: list[Path],
@@ -742,6 +970,9 @@ def generate_site_from_artifacts(
     template_path: Path,
     base_url: str,
     repository_name: str = ALL_REPOSITORY_NAME,
+    repository_id: str | None = None,
+    channel_name: str = STABLE_CHANNEL_NAME,
+    is_aggregate: bool | None = None,
     signing_key: tuple[Path, str, str] | None = None,
 ) -> list[PackageInfo]:
     if output_dir.exists():
@@ -760,7 +991,11 @@ def generate_site_from_artifacts(
     export_public_key_binary(homedir, fingerprint, output_dir, str(archive["key_name"]))
     write_release_file(output_dir, suite, component, architectures, archive)
     sign_release(output_dir, suite, homedir, fingerprint, passphrase)
-    write_preferences_file(output_dir, archive, infos, repository_name=repository_name)
+    resolved_repository_id = repository_id or repository_name
+    resolved_is_aggregate = (
+        repository_name == ALL_REPOSITORY_NAME if is_aggregate is None else is_aggregate
+    )
+    write_preferences_file(output_dir, archive, infos, repository_id=resolved_repository_id)
     render_index(
         template_path,
         output_dir,
@@ -769,6 +1004,9 @@ def generate_site_from_artifacts(
         fingerprint,
         base_url,
         repository_name,
+        resolved_repository_id,
+        channel_name,
+        resolved_is_aggregate,
     )
     return infos
 
@@ -781,6 +1019,11 @@ def generate_split_site(
     repository_template_path: Path,
     landing_template_path: Path,
     base_url: str,
+    channel_name: str = STABLE_CHANNEL_NAME,
+    path_prefix: str = "",
+    signing_key: tuple[Path, str, str] | None = None,
+    clean_output: bool = True,
+    render_landing: bool = True,
 ) -> list[PublishedRepository]:
     configured_names = [str(entry["name"]) for entry in config["repositories"]]
     if ALL_REPOSITORY_NAME in configured_names:
@@ -806,59 +1049,132 @@ def generate_split_site(
     if not all_package_paths:
         raise BuildError("cannot generate site without package artifacts")
 
-    if output_dir.exists():
+    if clean_output and output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    signing_key = prepare_signing_key()
-    _, fingerprint, _ = signing_key
+    resolved_signing_key = signing_key or prepare_signing_key()
+    _, fingerprint, _ = resolved_signing_key
+
+    aggregate_path = repository_path(path_prefix, ALL_REPOSITORY_NAME)
+    aggregate_id = repository_id(path_prefix, ALL_REPOSITORY_NAME)
 
     published_repositories = [
         PublishedRepository(
+            channel=channel_name,
             name=ALL_REPOSITORY_NAME,
-            url=join_url(base_url, ALL_REPOSITORY_NAME),
+            path=aggregate_path,
+            repository_id=aggregate_id,
+            url=join_url(base_url, aggregate_path),
             package_infos=tuple(
                 generate_site_from_artifacts(
                     config,
                     all_package_paths,
-                    output_dir / ALL_REPOSITORY_NAME,
+                    output_dir / aggregate_path,
                     template_path=repository_template_path,
-                    base_url=join_url(base_url, ALL_REPOSITORY_NAME),
-                    repository_name=ALL_REPOSITORY_NAME,
-                    signing_key=signing_key,
+                    base_url=join_url(base_url, aggregate_path),
+                    repository_name=aggregate_path,
+                    repository_id=aggregate_id,
+                    channel_name=channel_name,
+                    is_aggregate=True,
+                    signing_key=resolved_signing_key,
                 )
             ),
         )
     ]
 
     for repository_name in repository_names:
+        repo_path = repository_path(path_prefix, repository_name)
+        repo_id = repository_id(path_prefix, repository_name)
         published_repositories.append(
             PublishedRepository(
+                channel=channel_name,
                 name=repository_name,
-                url=join_url(base_url, repository_name),
+                path=repo_path,
+                repository_id=repo_id,
+                url=join_url(base_url, repo_path),
                 package_infos=tuple(
                     generate_site_from_artifacts(
                         config,
                         repository_artifacts[repository_name],
-                        output_dir / repository_name,
+                        output_dir / repo_path,
                         template_path=repository_template_path,
-                        base_url=join_url(base_url, repository_name),
-                        repository_name=repository_name,
-                        signing_key=signing_key,
+                        base_url=join_url(base_url, repo_path),
+                        repository_name=repo_path,
+                        repository_id=repo_id,
+                        channel_name=channel_name,
+                        is_aggregate=False,
+                        signing_key=resolved_signing_key,
                     )
                 ),
             )
         )
 
-    render_root_index(
-        landing_template_path,
-        output_dir,
-        config["archive"],
-        published_repositories,
-        fingerprint,
-        base_url,
-    )
+    if render_landing:
+        render_root_index(
+            landing_template_path,
+            output_dir,
+            config["archive"],
+            published_repositories,
+            fingerprint,
+            base_url,
+        )
+        write_manifest(output_dir, config["archive"], published_repositories)
     return published_repositories
+
+
+def config_with_repositories(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
+    channel_config = dict(config)
+    channel_config["repositories"] = entries
+    return channel_config
+
+
+def collect_cached_artifacts(
+    entries: list[dict[str, Any]],
+    artifact_root: Path,
+) -> dict[str, list[Path]]:
+    repository_artifacts: dict[str, list[Path]] = {}
+    for entry in entries:
+        repo_dir = artifact_root / str(entry["name"])
+        artifacts = dedupe_paths(sorted(repo_dir.glob("*.deb")))
+        if artifacts:
+            repository_artifacts[repo_dir.name] = artifacts
+    return repository_artifacts
+
+
+def build_repository_entries(
+    entries: list[dict[str, Any]],
+    *,
+    source_root: Path,
+    artifact_root: Path,
+    default_image: str,
+    default_packages: list[str],
+    allow_failures: bool,
+    channel_name: str,
+) -> tuple[dict[str, list[Path]], list[dict[str, Any]]]:
+    repository_artifacts: dict[str, list[Path]] = {}
+    built_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        try:
+            source_dir = sync_repo(entry, source_root)
+            artifacts = build_repo(
+                entry,
+                source_dir,
+                artifact_root,
+                default_image,
+                default_packages,
+            )
+        except BuildError as exc:
+            if not allow_failures:
+                raise
+            print(
+                f"skipping {channel_name}/{entry['name']}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        repository_artifacts[str(entry["name"])] = artifacts
+        built_entries.append(entry)
+    return repository_artifacts, built_entries
 
 
 def parse_args() -> argparse.Namespace:
@@ -880,33 +1196,98 @@ def main() -> int:
     artifact_root = args.workspace / "artifacts"
     source_root.mkdir(parents=True, exist_ok=True)
     artifact_root.mkdir(parents=True, exist_ok=True)
+    repository_template_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
+    landing_template_path = Path(__file__).resolve().parent.parent / "templates" / "landing.html"
 
-    repository_artifacts: dict[str, list[Path]] = {}
+    stable_entries = list(config["repositories"])
+    testing_entries = resolve_testing_repositories(config)
+    testing_config = config.get("testing") if isinstance(config.get("testing"), dict) else {}
+    testing_allow_failures = bool(testing_config.get("allow_build_failures", False))
+
     if args.skip_build:
-        for entry in config["repositories"]:
-            repo_dir = artifact_root / str(entry["name"])
-            artifacts = dedupe_paths(sorted(repo_dir.glob("*.deb")))
-            if artifacts:
-                repository_artifacts[repo_dir.name] = artifacts
+        stable_artifacts = collect_cached_artifacts(stable_entries, artifact_root)
+        testing_artifacts = collect_cached_artifacts(
+            testing_entries,
+            artifact_root / TESTING_CHANNEL_NAME,
+        )
+        built_testing_entries = [
+            entry for entry in testing_entries if str(entry["name"]) in testing_artifacts
+        ]
     else:
-        for entry in config["repositories"]:
-            source_dir = sync_repo(entry, source_root)
-            repository_artifacts[str(entry["name"])] = build_repo(
-                entry,
-                source_dir,
-                artifact_root,
-                str(archive["image"]),
-                list(archive.get("install_packages", [])),
-            )
+        stable_artifacts, _ = build_repository_entries(
+            stable_entries,
+            source_root=source_root,
+            artifact_root=artifact_root,
+            default_image=str(archive["image"]),
+            default_packages=list(archive.get("install_packages", [])),
+            allow_failures=False,
+            channel_name=STABLE_CHANNEL_NAME,
+        )
+        testing_artifacts, built_testing_entries = build_repository_entries(
+            testing_entries,
+            source_root=source_root,
+            artifact_root=artifact_root / TESTING_CHANNEL_NAME,
+            default_image=str(archive["image"]),
+            default_packages=list(archive.get("install_packages", [])),
+            allow_failures=testing_allow_failures,
+            channel_name=TESTING_CHANNEL_NAME,
+        )
 
-    generate_split_site(
-        config,
-        repository_artifacts,
-        args.output,
-        repository_template_path=Path(__file__).resolve().parent.parent / "templates" / "index.html",
-        landing_template_path=Path(__file__).resolve().parent.parent / "templates" / "landing.html",
-        base_url=base_url,
-    )
+    if not testing_entries:
+        generate_split_site(
+            config,
+            stable_artifacts,
+            args.output,
+            repository_template_path=repository_template_path,
+            landing_template_path=landing_template_path,
+            base_url=base_url,
+        )
+    else:
+        if args.output.exists():
+            shutil.rmtree(args.output)
+        args.output.mkdir(parents=True, exist_ok=True)
+        signing_key = prepare_signing_key()
+        _, fingerprint, _ = signing_key
+        published_repositories: list[PublishedRepository] = []
+        published_repositories.extend(
+            generate_split_site(
+                config_with_repositories(config, stable_entries),
+                stable_artifacts,
+                args.output,
+                repository_template_path=repository_template_path,
+                landing_template_path=landing_template_path,
+                base_url=base_url,
+                channel_name=STABLE_CHANNEL_NAME,
+                signing_key=signing_key,
+                clean_output=False,
+                render_landing=False,
+            )
+        )
+        if testing_artifacts:
+            published_repositories.extend(
+                generate_split_site(
+                    config_with_repositories(config, built_testing_entries),
+                    testing_artifacts,
+                    args.output,
+                    repository_template_path=repository_template_path,
+                    landing_template_path=landing_template_path,
+                    base_url=base_url,
+                    channel_name=TESTING_CHANNEL_NAME,
+                    path_prefix=TESTING_CHANNEL_NAME,
+                    signing_key=signing_key,
+                    clean_output=False,
+                    render_landing=False,
+                )
+            )
+        render_root_index(
+            landing_template_path,
+            args.output,
+            archive,
+            published_repositories,
+            fingerprint,
+            base_url,
+        )
+        write_manifest(args.output, archive, published_repositories)
     print(f"wrote site to {args.output}")
     return 0
 

@@ -148,8 +148,9 @@
         <div class="chip">Split SafeLibs apt repositories</div>
         <h1>SafeLibs Apt Repositories</h1>
         <p>
-          Install the full SafeLibs package set from <code>/all/</code>, or pick
-          a per-library repository when you only want one port.
+          Install stable packages from <code>/all/</code>, pick a per-library
+          stable repository, or use <code>/testing/all/</code> for the latest
+          buildable default-branch packages.
         </p>
         <pre><code>sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
 curl -fsSL {default_repo_url}/{key_name}.gpg | sudo tee /etc/apt/keyrings/{key_name}.gpg > /dev/null
@@ -197,9 +198,10 @@ sudo apt-get update</code></pre>
           by that repository.
         </p>
         <p>
-          The site is generated from pinned SafeLibs package repos, then
-          verified with <code>apt</code> inside Ubuntu 24.04 Docker before
-          publication.
+          Stable repositories are generated from pinned SafeLibs package refs.
+          Testing repositories are generated from the latest buildable
+          default-branch port commits. Both channels are verified with
+          <code>apt</code> inside Ubuntu 24.04 Docker before publication.
         </p>
       </article>
     </section>

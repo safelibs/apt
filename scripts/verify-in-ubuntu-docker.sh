@@ -6,9 +6,10 @@ IMAGE=${SAFEAPTREPO_VERIFY_IMAGE:-${SAFEDEBREPO_VERIFY_IMAGE:-ubuntu:24.04}}
 REPO_TARGET=${1:-"$ROOT_DIR/site"}
 CONFIG_PATH=${2:-"$ROOT_DIR/repositories.yml"}
 REPOSITORY_NAME=${3:-all}
+REPOSITORY_PATH=${4:-"$REPOSITORY_NAME"}
 
 IFS=$'\t' read -r suite component key_name packages_csv <<EOF
-$(python3 - "$CONFIG_PATH" "$REPOSITORY_NAME" <<'PY'
+$(python3 - "$CONFIG_PATH" "$REPOSITORY_NAME" "$REPOSITORY_PATH" <<'PY'
 from pathlib import Path
 import sys
 import yaml
@@ -16,7 +17,10 @@ import yaml
 config = yaml.safe_load(Path(sys.argv[1]).read_text())
 archive = config["archive"]
 repository_name = sys.argv[2]
-if repository_name == "all":
+repository_path = sys.argv[3]
+if repository_path.startswith("testing/"):
+    packages = []
+elif repository_name == "all":
     packages = []
     packages_complete = True
     for entry in config["repositories"]:
@@ -50,7 +54,8 @@ PY
 )
 EOF
 
-preference_name="${key_name}-${REPOSITORY_NAME}.pref"
+repository_id=${REPOSITORY_PATH//\//-}
+preference_name="${key_name}-${repository_id}.pref"
 repo_uri=
 repo_mode=
 madison_source=
@@ -61,10 +66,10 @@ if [[ -d "$REPO_TARGET" ]]; then
   if [[ -d "$site_dir/dists" ]]; then
     repo_dir=$site_dir
   else
-    repo_dir="$site_dir/$REPOSITORY_NAME"
+    repo_dir="$site_dir/$REPOSITORY_PATH"
   fi
   if [[ ! -d "$repo_dir" ]]; then
-    printf 'expected repository directory for %s under %s\n' "$REPOSITORY_NAME" "$REPO_TARGET" >&2
+    printf 'expected repository directory for %s under %s\n' "$REPOSITORY_PATH" "$REPO_TARGET" >&2
     exit 1
   fi
   repo_mode='local'
@@ -77,11 +82,11 @@ if [[ -d "$REPO_TARGET" ]]; then
 elif [[ "$REPO_TARGET" =~ ^https?:// ]]; then
   repo_mode='remote'
   case "${REPO_TARGET%/}" in
-    */"$REPOSITORY_NAME")
+    */"$REPOSITORY_PATH")
       repo_uri=${REPO_TARGET%/}
       ;;
     *)
-      repo_uri="${REPO_TARGET%/}/$REPOSITORY_NAME"
+      repo_uri="${REPO_TARGET%/}/$REPOSITORY_PATH"
       ;;
   esac
   madison_source=$repo_uri
@@ -148,7 +153,7 @@ PY
 fi
 
 if [[ -z "$packages_csv" ]]; then
-  printf 'no packages found to verify for %s\n' "$REPOSITORY_NAME" >&2
+  printf 'no packages found to verify for %s\n' "$REPOSITORY_PATH" >&2
   exit 1
 fi
 

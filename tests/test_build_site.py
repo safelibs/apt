@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
 import subprocess
 import tempfile
@@ -336,6 +337,7 @@ class BuildSiteTests(unittest.TestCase):
             ],
         )
         self.assertEqual(loaded["repositories"][0]["build"]["mode"], "safe-debian")
+        self.assertTrue(all(entry.get("verify_packages") for entry in loaded["repositories"]))
         self.assertEqual(loaded["repositories"][4]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", loaded["repositories"][4]["build"])
         self.assertEqual(loaded["repositories"][10]["build"]["mode"], "checkout-artifacts")
@@ -346,6 +348,21 @@ class BuildSiteTests(unittest.TestCase):
         self.assertIn('cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so*', loaded["repositories"][14]["build"]["command"])
         self.assertIn("DEB_BUILD_OPTIONS", loaded["repositories"][14]["build"]["command"])
         self.assertIn("nocheck", loaded["repositories"][14]["build"]["command"])
+        self.assertEqual(loaded["testing"]["discover"]["github_org"], "safelibs")
+        self.assertTrue(loaded["testing"]["allow_build_failures"])
+        self.assertEqual(loaded["testing"]["default_build"]["mode"], "safe-debian")
+        self.assertEqual(
+            [entry["name"] for entry in loaded["testing"]["repository_overrides"]],
+            ["libc6", "libjansson"],
+        )
+        self.assertIn(
+            'package-deb --out "$SAFEAPTREPO_OUTPUT/debs"',
+            loaded["testing"]["repository_overrides"][0]["build"]["command"],
+        )
+        self.assertIn(
+            'cp -v "$SAFEAPTREPO_OUTPUT"/debs/*.deb "$SAFEAPTREPO_OUTPUT"/',
+            loaded["testing"]["repository_overrides"][0]["build"]["command"],
+        )
 
     def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -399,6 +416,70 @@ class BuildSiteTests(unittest.TestCase):
             ["git", "-C", str(target_dir), "checkout", "--detach", "refs/tags/alpha/04-test"]
         )
         self.assertEqual(result, target_dir)
+
+    def test_sync_repo_checks_out_branch_refs_from_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source_root = Path(tmp)
+            entry = {**repo_config("alpha"), "ref": "refs/heads/main"}
+            target_dir = source_root / "alpha"
+            with (
+                mock.patch("tools.build_site.clone_or_update_repo") as clone_mock,
+                mock.patch("tools.build_site.run") as run_mock,
+            ):
+                result = build_site.sync_repo(entry, source_root)
+
+        clone_mock.assert_called_once_with("safelibs/port-alpha", target_dir)
+        run_mock.assert_called_once_with(
+            ["git", "-C", str(target_dir), "checkout", "--detach", "origin/main"]
+        )
+        self.assertEqual(result, target_dir)
+
+    def test_resolve_testing_repositories_discovers_ports_and_applies_overrides(self) -> None:
+        github_output = json.dumps(
+            [
+                {
+                    "name": "port-beta",
+                    "defaultBranchRef": {"name": "develop"},
+                    "isArchived": False,
+                },
+                {
+                    "name": "not-a-port",
+                    "defaultBranchRef": {"name": "main"},
+                    "isArchived": False,
+                },
+                {
+                    "name": "port-old",
+                    "defaultBranchRef": {"name": "main"},
+                    "isArchived": True,
+                },
+            ]
+        )
+        config = {
+            "testing": {
+                "discover": {"github_org": "safelibs", "repository_prefix": "port-"},
+                "default_build": {"mode": "safe-debian", "artifact_globs": ["*.deb"]},
+                "repository_overrides": [
+                    {
+                        "name": "beta",
+                        "build": {"packages": ["pkg-config"]},
+                    },
+                    {
+                        "name": "gamma",
+                        "github_repo": "safelibs/port-gamma",
+                        "ref": "refs/heads/main",
+                    },
+                ],
+            }
+        }
+
+        with mock.patch("tools.build_site.run", return_value=completed(stdout=github_output)):
+            entries = build_site.resolve_testing_repositories(config)
+
+        self.assertEqual([entry["name"] for entry in entries], ["beta", "gamma"])
+        self.assertEqual(entries[0]["ref"], "refs/heads/develop")
+        self.assertEqual(entries[0]["build"]["mode"], "safe-debian")
+        self.assertEqual(entries[0]["build"]["packages"], ["pkg-config"])
+        self.assertEqual(entries[1]["github_repo"], "safelibs/port-gamma")
 
     def test_build_repo_checkout_artifacts_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -466,6 +547,30 @@ class BuildSiteTests(unittest.TestCase):
                         "build": {
                             "workdir": "missing",
                             "command": "./build.sh",
+                            "artifact_globs": ["*.deb"],
+                        },
+                    },
+                    source_dir,
+                    artifact_root,
+                    "ubuntu:24.04",
+                    [],
+                )
+
+    def test_build_repo_safe_debian_requires_debian_control(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            safe_dir = source_dir / "safe"
+            artifact_root = tmp_path / "artifacts"
+            safe_dir.mkdir(parents=True)
+            artifact_root.mkdir()
+
+            with self.assertRaisesRegex(build_site.BuildError, "missing debian/control"):
+                build_site.build_repo(
+                    {
+                        "name": "demo",
+                        "build": {
+                            "mode": "safe-debian",
                             "artifact_globs": ["*.deb"],
                         },
                     },
@@ -892,6 +997,48 @@ class BuildSiteTests(unittest.TestCase):
             alpha_packages = (output_dir / "alpha/dists/noble/main/binary-amd64/Packages").read_text()
             self.assertIn("Package: libalpha1", alpha_packages)
             self.assertNotIn("Package: libbeta1", alpha_packages)
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            self.assertEqual(manifest["channels"][0]["name"], "stable")
+            self.assertEqual(
+                [repo["path"] for repo in manifest["channels"][0]["repositories"]],
+                ["all", "alpha", "beta"],
+            )
+
+    def test_generate_split_site_can_publish_testing_under_path_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb_a = make_deb(tmp_path, "libalpha1", "1.0+safelibs1")
+            output_dir = tmp_path / "site"
+            template_root = Path(__file__).resolve().parent.parent / "templates"
+            config = {
+                "archive": archive_config(),
+                "repositories": [repo_config("alpha")],
+            }
+
+            published = build_site.generate_split_site(
+                config,
+                {"alpha": [deb_a]},
+                output_dir,
+                repository_template_path=template_root / "index.html",
+                landing_template_path=template_root / "landing.html",
+                base_url="https://example.invalid/apt-repo/",
+                channel_name="testing",
+                path_prefix="testing",
+            )
+
+            self.assertEqual([(repo.channel, repo.name, repo.path) for repo in published], [
+                ("testing", "all", "testing/all"),
+                ("testing", "alpha", "testing/alpha"),
+            ])
+            self.assertTrue((output_dir / "testing/all/dists/noble/InRelease").exists())
+            self.assertTrue((output_dir / "testing/alpha/dists/noble/InRelease").exists())
+            self.assertTrue((output_dir / "testing/all/safelibs-testing-all.pref").exists())
+            self.assertTrue((output_dir / "testing/alpha/safelibs-testing-alpha.pref").exists())
+            root_index = (output_dir / "index.html").read_text()
+            self.assertIn("https://example.invalid/apt-repo/testing/all", root_index)
+            alpha_index = (output_dir / "testing/alpha/index.html").read_text()
+            self.assertIn("safelibs-testing-alpha.pref", alpha_index)
+            self.assertIn("testing/alpha", alpha_index)
 
     def test_generate_split_site_rejects_reserved_all_repository_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
