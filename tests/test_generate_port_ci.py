@@ -219,31 +219,6 @@ class AutoToolchainTests(unittest.TestCase):
         self.assertNotIn("--default-toolchain stable", inner)
 
 
-class ClosePRsWorkflowTests(unittest.TestCase):
-    def test_render_close_prs_workflow_shape(self):
-        content = gen.render_close_prs_workflow()
-        doc = yaml.safe_load(content)
-        self.assertEqual(doc["name"], "close-prs")
-        self.assertIn("pull_request_target", doc[True])
-        self.assertEqual(
-            sorted(doc[True]["pull_request_target"]["types"]),
-            ["opened", "reopened"],
-        )
-        self.assertEqual(doc["permissions"]["pull-requests"], "write")
-        steps = doc["jobs"]["close"]["steps"]
-        self.assertTrue(any("gh pr close" in s.get("run", "") for s in steps))
-
-    def test_build_workflow_has_no_pull_request_trigger(self):
-        entry = {"name": "cjson", "build": {"mode": "safe-debian", "artifact_globs": ["*.deb"]}}
-        workflow = gen.render_workflow(entry, sample_archive())
-        doc = yaml.safe_load(workflow)
-        triggers = doc[True]
-        self.assertNotIn("pull_request", triggers)
-        self.assertNotIn("pull_request_target", triggers)
-        self.assertIn("push", triggers)
-        self.assertIn("workflow_dispatch", triggers)
-
-
 class WriteWorkflowTests(unittest.TestCase):
     def test_idempotent_write(self):
         entry = {"name": "demo", "build": {"mode": "safe-debian", "artifact_globs": ["*.deb"]}}

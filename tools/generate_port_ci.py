@@ -7,11 +7,9 @@ that port repository, then publishes the .deb artifacts to a per-commit GitHub
 release. apt-repo consumes those releases when assembling the signed apt repo.
 
 The workflow is gated to:
-  * build on every push and workflow_dispatch (PRs are disabled at the
-    repository level via a separate close-prs workflow, so there is no
-    pull_request trigger here)
+  * build on every push, pull_request, and workflow_dispatch
   * publish a `build-<12char-sha>` GitHub release with the .deb artifacts
-    on push events
+    only on push events (PRs from forks do not have release privileges).
 """
 from __future__ import annotations
 
@@ -245,6 +243,7 @@ name: build-debs
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -300,6 +299,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{{{ github.token }}}}
         run: |
@@ -321,39 +321,8 @@ jobs:
 """
 
 
-def render_close_prs_workflow() -> str:
-    """Return a static workflow that auto-closes any PR opened against the
-    repository. Port repositories are push-only; PRs are not accepted."""
-    return (
-        GENERATED_HEADER
-        + """
-name: close-prs
-
-on:
-  pull_request_target:
-    types: [opened, reopened]
-
-permissions:
-  pull-requests: write
-
-jobs:
-  close:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Close PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr close "$PR_NUMBER" \\
-            --repo "$GITHUB_REPOSITORY" \\
-            --comment "Pull requests are disabled on this repository. Push directly or open an issue upstream in safelibs/apt-repo instead."
-"""
-    )
-
-
-def write_workflow(port_dir: Path, content: str, filename: str = "build-debs.yml") -> tuple[bool, Path]:
-    dest = port_dir / ".github" / "workflows" / filename
+def write_workflow(port_dir: Path, content: str) -> tuple[bool, Path]:
+    dest = port_dir / ".github" / "workflows" / "build-debs.yml"
     dest.parent.mkdir(parents=True, exist_ok=True)
     previous = dest.read_text() if dest.exists() else None
     if previous == content:
@@ -394,7 +363,6 @@ def main() -> int:
     written = 0
     unchanged = 0
     missing_remote: list[str] = []
-    close_prs_content = render_close_prs_workflow()
     for port_dir in ports:
         if not has_safelibs_remote(port_dir):
             missing_remote.append(port_dir.name)
@@ -402,28 +370,22 @@ def main() -> int:
         name = port_name(port_dir)
         entry = build_entry_for(config, name)
         try:
-            build_content = render_workflow(entry, archive, port_dir)
+            content = render_workflow(entry, archive, port_dir)
         except SystemExit as exc:
             print(f"{port_dir.name}: {exc}", file=sys.stderr)
             return 2
-        outputs = [
-            ("build-debs.yml", build_content),
-            ("close-prs.yml", close_prs_content),
-        ]
         if args.dry_run:
-            for filename, content in outputs:
-                dest = port_dir / ".github" / "workflows" / filename
-                current = dest.read_text() if dest.exists() else None
-                label = "would-update" if current != content else "up-to-date"
-                print(f"{label}: {dest}")
+            dest = port_dir / ".github" / "workflows" / "build-debs.yml"
+            current = dest.read_text() if dest.exists() else None
+            label = "would-update" if current != content else "up-to-date"
+            print(f"{label}: {dest}")
             continue
-        for filename, content in outputs:
-            changed, dest = write_workflow(port_dir, content, filename)
-            if changed:
-                written += 1
-                print(f"wrote {dest}")
-            else:
-                unchanged += 1
+        changed, dest = write_workflow(port_dir, content)
+        if changed:
+            written += 1
+            print(f"wrote {dest}")
+        else:
+            unchanged += 1
     if missing_remote:
         print(
             f"skipped (no safelibs remote): {', '.join(missing_remote)}",
