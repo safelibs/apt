@@ -346,6 +346,7 @@ class BuildSiteTests(unittest.TestCase):
                 "libsdl",
                 "libsodium",
                 "libtiff",
+                "libuv",
                 "libvips",
                 "libwebp",
                 "libxml",
@@ -361,29 +362,92 @@ class BuildSiteTests(unittest.TestCase):
             for entry in loaded["repositories"]
             if "verify_packages" in entry
         }
-        self.assertEqual(set(verify_packages_by_name), set(repositories_by_name))
         self.assertEqual(
-            verify_packages_by_name["libjpeg-turbo"],
-            ["libjpeg-turbo8", "libturbojpeg"],
+            verify_packages_by_name,
+            {
+                "cjson": ["libcjson-dev", "libcjson1"],
+                "giflib": ["libgif-dev", "libgif7"],
+                "libarchive": [
+                    "libarchive-dev",
+                    "libarchive-tools",
+                    "libarchive13t64",
+                ],
+                "libbz2": ["bzip2-doc", "bzip2", "libbz2-1.0", "libbz2-dev"],
+                "libcsv": ["libcsv-dev", "libcsv3"],
+                "libexif": ["libexif-dev", "libexif-doc", "libexif12"],
+                "libjansson": ["libjansson-dev", "libjansson4"],
+                "libjpeg-turbo": [
+                    "libjpeg-turbo-progs",
+                    "libjpeg-turbo8-dev",
+                    "libjpeg-turbo8",
+                    "libturbojpeg-java",
+                    "libturbojpeg0-dev",
+                    "libturbojpeg",
+                ],
+                "libjson": ["libjson-c-dev", "libjson-c5"],
+                "liblzma": ["liblzma-dev", "liblzma5"],
+                "libpng": ["libpng-dev", "libpng-tools", "libpng16-16t64"],
+                "libsdl": ["libsdl2-2.0-0", "libsdl2-dev", "libsdl2-tests"],
+                "libsodium": ["libsodium-dev", "libsodium23"],
+                "libtiff": ["libtiff-dev", "libtiff-tools", "libtiff6", "libtiffxx6"],
+                "libuv": ["libuv1-dev", "libuv1t64"],
+                "libvips": [
+                    "gir1.2-vips-8.0",
+                    "libvips-dev",
+                    "libvips-doc",
+                    "libvips-tools",
+                    "libvips42t64",
+                ],
+                "libwebp": [
+                    "libsharpyuv-dev",
+                    "libsharpyuv0",
+                    "libwebp-dev",
+                    "libwebp7",
+                    "libwebpdecoder3",
+                    "libwebpdemux2",
+                    "libwebpmux3",
+                    "webp",
+                ],
+                "libxml": ["libxml2-dev", "libxml2-utils", "libxml2", "python3-libxml2"],
+                "libyaml": ["libyaml-0-2", "libyaml-dev", "libyaml-doc"],
+                "libzstd": ["libzstd-dev", "libzstd1", "zstd"],
+            },
         )
         self.assertEqual(
-            verify_packages_by_name["libjson"],
-            ["libjson-c5"],
+            {
+                entry["name"]: entry["verify_all_packages"]
+                for entry in loaded["repositories"]
+                if "verify_all_packages" in entry
+            },
+            {
+                "cjson": ["libcjson1"],
+                "giflib": ["libgif7"],
+                "libarchive": ["libarchive13t64"],
+                "libbz2": ["libbz2-1.0"],
+                "libcsv": ["libcsv3"],
+                "libexif": ["libexif12"],
+                "libjansson": ["libjansson4"],
+                "libjpeg-turbo": ["libjpeg-turbo8", "libturbojpeg"],
+                "libjson": ["libjson-c5"],
+                "liblzma": ["liblzma5"],
+                "libpng": ["libpng16-16t64"],
+                "libsdl": ["libsdl2-2.0-0"],
+                "libsodium": ["libsodium23"],
+                "libtiff": ["libtiff6"],
+                "libuv": ["libuv1t64"],
+                "libvips": ["libvips-doc"],
+                "libwebp": ["libwebp7"],
+                "libxml": ["libxml2"],
+                "libyaml": ["libyaml-0-2"],
+                "libzstd": ["libzstd1"],
+            },
         )
-        self.assertEqual(
-            verify_packages_by_name["libpng"],
-            ["libpng16-16t64"],
-        )
-        self.assertEqual(
-            verify_packages_by_name["libzstd"],
-            ["libzstd1"],
-        )
-        self.assertEqual(repositories_by_name["libvips"]["verify_packages"], ["libvips42t64"])
-        self.assertEqual(repositories_by_name["libvips"]["verify_all_packages"], ["libvips-doc"])
         self.assertEqual(repositories_by_name["libcsv"]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", repositories_by_name["libcsv"]["build"])
         self.assertEqual(repositories_by_name["libpng"]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", repositories_by_name["libpng"]["build"])
+        self.assertEqual(repositories_by_name["libuv"]["ref"], "refs/tags/build-a2d0955c60f5")
+        self.assertEqual(repositories_by_name["libuv"]["build"]["mode"], "safe-debian")
         self.assertEqual(repositories_by_name["libvips"]["build"]["mode"], "docker")
         self.assertIn("build-check-install", repositories_by_name["libvips"]["build"]["command"])
         self.assertIn(

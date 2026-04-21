@@ -97,9 +97,8 @@ else
   exit 1
 fi
 
-if [[ -z "$packages_csv" ]]; then
-  packages_csv=$(
-    python3 - "$repo_mode" "${repo_dir:-}" "$repo_uri" "$suite" "$component" <<'PY'
+derive_index_packages_csv() {
+  python3 - "$repo_mode" "${repo_dir:-}" "$repo_uri" "$suite" "$component" <<'PY'
 import gzip
 from pathlib import Path
 from urllib.error import HTTPError
@@ -151,7 +150,23 @@ else:
 
 print(package_csv(packages_texts))
 PY
+}
+
+if [[ "$REPOSITORY_NAME" == "all" && "$REPOSITORY_PATH" == testing/* && -n "$packages_csv" ]]; then
+  index_packages_csv=$(derive_index_packages_csv)
+  packages_csv=$(
+    python3 - "$packages_csv" "$index_packages_csv" <<'PY'
+import sys
+
+configured = [package for package in sys.argv[1].split(",") if package]
+available = {package for package in sys.argv[2].split(",") if package}
+print(",".join(package for package in configured if package in available))
+PY
   )
+fi
+
+if [[ -z "$packages_csv" ]]; then
+  packages_csv=$(derive_index_packages_csv)
 fi
 
 if [[ -z "$packages_csv" ]]; then

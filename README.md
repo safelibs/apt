@@ -22,6 +22,7 @@ published SafeLibs `.deb` release assets:
 - `safelibs/port-libsdl` at `refs/tags/build-14609a9a5844`
 - `safelibs/port-libsodium` at `refs/tags/build-d1d241340f2e`
 - `safelibs/port-libtiff` at `refs/tags/build-9e34df3e07fc`
+- `safelibs/port-libuv` at `refs/tags/build-a2d0955c60f5`
 - `safelibs/port-libvips` at `refs/tags/build-12543f951c24`
 - `safelibs/port-libwebp` at `refs/tags/build-d9437d8e3c87`
 - `safelibs/port-libxml` at `refs/tags/build-8af9d2976d24`
@@ -107,10 +108,13 @@ make verify-docker
 
 `make verify-docker` verifies the explicit stable `/all/` repository, each
 stable per-library repository, and any generated testing repositories. The
-`/all/` repository uses each entry's `verify_all_packages` when present, then
-falls back to `verify_packages`. When a manifest entry omits configured verify
-packages, the verification script derives the package set directly from the
-published `Packages` index for that repository.
+`/all/` repository uses each entry's runtime-oriented `verify_all_packages`
+when present, then falls back to `verify_packages`. When a manifest entry omits
+configured verify packages, the verification script derives the package set
+directly from the published `Packages` index for that repository. Stable
+per-library `verify_packages` entries list every package asset published by
+that repository, including runtime, development, tool, and documentation
+packages.
 
 The site output lands in `site/`, with installable repositories under
 `site/all/`, `site/<library>/`, `site/testing/all/`, and
