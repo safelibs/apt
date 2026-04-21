@@ -871,6 +871,117 @@ def repository_lead_text(
     )
 
 
+def channel_label(channel_name: str) -> str:
+    if channel_name == STABLE_CHANNEL_NAME:
+        return "Stable"
+    if channel_name == TESTING_CHANNEL_NAME:
+        return "Testing"
+    return channel_name.replace("-", " ").title()
+
+
+def channel_sort_key(channel_name: str) -> tuple[int, str]:
+    order = {
+        STABLE_CHANNEL_NAME: 0,
+        TESTING_CHANNEL_NAME: 1,
+    }
+    return (order.get(channel_name, len(order)), channel_name)
+
+
+def repository_sort_key(repository: PublishedRepository) -> tuple[int, str, str]:
+    channel_order, channel_name = channel_sort_key(repository.channel)
+    return (channel_order, repository.name, channel_name)
+
+
+def channel_class(channel_name: str) -> str:
+    token = re.sub(r"[^a-z0-9_-]+", "-", channel_name.lower()).strip("-")
+    return f"is-{token or 'channel'}"
+
+
+def package_count_text(package_infos: tuple[PackageInfo, ...]) -> str:
+    count = len(package_infos)
+    suffix = "" if count == 1 else "s"
+    return f"{count} published package{suffix}"
+
+
+def package_summary(package_infos: tuple[PackageInfo, ...]) -> str:
+    sorted_infos = sorted(package_infos, key=lambda item: item.name)
+    return ", ".join(info.name for info in sorted_infos)
+
+
+def aggregate_repository_description(repository: PublishedRepository) -> str:
+    if repository.channel == TESTING_CHANNEL_NAME:
+        return "Latest buildable default-branch packages across the SafeLibs ports."
+    if repository.channel == STABLE_CHANNEL_NAME:
+        return "Pinned SafeLibs releases across the full package set."
+    return f"{channel_label(repository.channel)} aggregate repository for the full package set."
+
+
+def render_featured_repository_card(repository: PublishedRepository) -> str:
+    escaped_url = html.escape(repository.url)
+    escaped_path = html.escape(repository.path)
+    return "\n".join(
+        [
+            f'      <article class="primary-repo {channel_class(repository.channel)}">',
+            '        <div class="repo-topline">',
+            "          <span class=\"channel-pill\">"
+            + html.escape(channel_label(repository.channel))
+            + "</span>",
+            "          <span>"
+            + html.escape(package_count_text(repository.package_infos))
+            + "</span>",
+            "        </div>",
+            f'        <h3><a href="{escaped_url}/"><code>/{escaped_path}/</code></a></h3>',
+            f"        <p>{html.escape(aggregate_repository_description(repository))}</p>",
+            "      </article>",
+        ]
+    )
+
+
+def render_featured_repository_cards(repositories: list[PublishedRepository]) -> str:
+    aggregate_repositories = sorted(
+        (repo for repo in repositories if repo.name == ALL_REPOSITORY_NAME),
+        key=repository_sort_key,
+    )
+    return "\n".join(
+        render_featured_repository_card(repo) for repo in aggregate_repositories
+    )
+
+
+def render_repository_row(repository: PublishedRepository) -> str:
+    escaped_url = html.escape(repository.url)
+    escaped_name = html.escape(repository.name)
+    escaped_path = html.escape(repository.path)
+    return "\n".join(
+        [
+            "      <li class=\"repo-row\">",
+            "        <span class=\"channel-pill "
+            + html.escape(channel_class(repository.channel))
+            + "\">"
+            + html.escape(channel_label(repository.channel))
+            + "</span>",
+            f'        <a class="repo-name" href="{escaped_url}/">{escaped_name}</a>',
+            f'        <span class="repo-path"><code>/{escaped_path}/</code></span>',
+            "        <span class=\"repo-count\">"
+            + html.escape(package_count_text(repository.package_infos))
+            + "</span>",
+            "        <span class=\"repo-packages\"><code>"
+            + html.escape(package_summary(repository.package_infos))
+            + "</code></span>",
+            "      </li>",
+        ]
+    )
+
+
+def render_repository_rows(repositories: list[PublishedRepository]) -> str:
+    per_library_repositories = sorted(
+        (repo for repo in repositories if repo.name != ALL_REPOSITORY_NAME),
+        key=repository_sort_key,
+    )
+    return "\n".join(
+        render_repository_row(repo) for repo in per_library_repositories
+    )
+
+
 def write_preferences_file(
     site_root: Path,
     archive: dict[str, Any],
@@ -928,7 +1039,7 @@ def render_index(
             if is_aggregate
             else f"{channel_label} single-library apt repository: {repository_name}"
         ),
-        heading="SafeLibs Apt Repository",
+        heading=f"/{repository_name}/",
         lead_text=repository_lead_text(
             repository_name,
             channel_name=channel_name,
@@ -970,27 +1081,19 @@ def render_root_index(
         next(repo for repo in repositories if repo.name == ALL_REPOSITORY_NAME),
     )
     all_repo_url = all_repo.url
-    repo_cards = "\n".join(
-        "\n".join(
-            [
-                '      <article class="panel repo-card stack">',
-                "        <div class=\"chip\">"
-                + html.escape(
-                    f"{repo.channel.capitalize()} "
-                    + ("aggregate repo" if repo.name == ALL_REPOSITORY_NAME else "per-library repo")
-                )
-                + "</div>",
-                f'        <h3><a href="{html.escape(repo.url)}/">{html.escape(repo.name)}</a></h3>',
-                f"        <p><code>/{html.escape(repo.path)}/</code></p>",
-                f"        <p>{len(repo.package_infos)} published package{'s' if len(repo.package_infos) != 1 else ''}.</p>",
-                "        <p><code>"
-                + html.escape(", ".join(info.name for info in sorted(repo.package_infos, key=lambda item: item.name)))
-                + "</code></p>",
-                "      </article>",
-            ]
+    all_repo_file_stem = repository_file_stem(key_name, all_repo.repository_id)
+    if all_repo.channel == STABLE_CHANNEL_NAME:
+        default_install_heading = "Default Stable Install"
+        default_install_text = (
+            "Installs the signed key, package pinning, and the stable "
+            "<code>/all/</code> source."
         )
-        for repo in repositories
-    )
+    else:
+        default_install_heading = f"{channel_label(all_repo.channel)} Aggregate Install"
+        default_install_text = (
+            "Installs the signed key, package pinning, and the "
+            f"<code>/{html.escape(all_repo.path)}/</code> source."
+        )
     package_items = "\n".join(
         "          <li><code>"
         f"{html.escape(info.name)}</code> <span>{html.escape(info.version)}</span></li>"
@@ -1006,10 +1109,13 @@ def render_root_index(
         description=archive["description"],
         fingerprint=fingerprint_display(fingerprint),
         default_repo_url=all_repo_url,
-        preferences_download=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.pref",
-        preferences_file=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.pref",
-        list_file=f"{repository_file_stem(key_name, ALL_REPOSITORY_NAME)}.list",
-        repository_cards=repo_cards,
+        default_install_heading=default_install_heading,
+        default_install_text=default_install_text,
+        preferences_download=f"{all_repo_file_stem}.pref",
+        preferences_file=f"{all_repo_file_stem}.pref",
+        list_file=f"{all_repo_file_stem}.list",
+        featured_repository_cards=render_featured_repository_cards(repositories),
+        repository_rows=render_repository_rows(repositories),
         package_items=package_items,
     )
     (site_root / "index.html").write_text(html_text)

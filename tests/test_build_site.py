@@ -1274,6 +1274,78 @@ class BuildSiteTests(unittest.TestCase):
             self.assertIn("safelibs-testing-alpha.pref", alpha_index)
             self.assertIn("testing/alpha", alpha_index)
 
+    def test_render_root_index_features_aggregate_repositories_first(self) -> None:
+        def package_info(name: str) -> build_site.PackageInfo:
+            return build_site.PackageInfo(
+                path=Path(f"{name}.deb"),
+                name=name,
+                version="1.0+safelibs1",
+                architecture="amd64",
+                pool_path=Path("pool/main/l") / name / f"{name}.deb",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            template_path = (
+                Path(__file__).resolve().parent.parent / "templates" / "landing.html"
+            )
+            repositories = [
+                build_site.PublishedRepository(
+                    channel="stable",
+                    name="alpha",
+                    path="alpha",
+                    repository_id="alpha",
+                    url="https://example.invalid/apt-repo/alpha",
+                    package_infos=(package_info("libalpha1"),),
+                ),
+                build_site.PublishedRepository(
+                    channel="testing",
+                    name="all",
+                    path="testing/all",
+                    repository_id="testing-all",
+                    url="https://example.invalid/apt-repo/testing/all",
+                    package_infos=(package_info("libalpha1"), package_info("libbeta1")),
+                ),
+                build_site.PublishedRepository(
+                    channel="stable",
+                    name="all",
+                    path="all",
+                    repository_id="all",
+                    url="https://example.invalid/apt-repo/all",
+                    package_infos=(package_info("libalpha1"),),
+                ),
+                build_site.PublishedRepository(
+                    channel="testing",
+                    name="alpha",
+                    path="testing/alpha",
+                    repository_id="testing-alpha",
+                    url="https://example.invalid/apt-repo/testing/alpha",
+                    package_infos=(package_info("libalpha1"),),
+                ),
+            ]
+
+            build_site.render_root_index(
+                template_path,
+                output_dir,
+                archive_config(),
+                repositories,
+                "A" * 40,
+                "https://example.invalid/apt-repo/",
+            )
+
+            root_index = (output_dir / "index.html").read_text()
+
+        stable_all_pos = root_index.index('href="https://example.invalid/apt-repo/all/"')
+        testing_all_pos = root_index.index(
+            'href="https://example.invalid/apt-repo/testing/all/"'
+        )
+        directory_pos = root_index.index("Repository Directory")
+        stable_alpha_pos = root_index.index('href="https://example.invalid/apt-repo/alpha/"')
+
+        self.assertLess(stable_all_pos, testing_all_pos)
+        self.assertLess(testing_all_pos, directory_pos)
+        self.assertLess(directory_pos, stable_alpha_pos)
+
     def test_generate_split_site_rejects_reserved_all_repository_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

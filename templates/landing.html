@@ -4,192 +4,343 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{page_title}</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {{
-      --bg: #f1f4ef;
-      --card: rgba(255, 255, 255, 0.92);
-      --text: #16210f;
-      --muted: #52644a;
-      --accent: #2f6f3e;
-      --accent-2: #8fbc5a;
-      --border: rgba(47, 111, 62, 0.16);
-      --code-bg: #132018;
-      --code-text: #eef7ea;
+      --bg: #f6f8f3;
+      --surface: #ffffff;
+      --surface-soft: #eef3eb;
+      --text: #172111;
+      --muted: #566250;
+      --accent: #1f6b4a;
+      --accent-strong: #164f37;
+      --testing: #8a5a12;
+      --border: #d7e1d2;
+      --code-bg: #111a16;
+      --code-text: #f1fbf4;
+      --shadow: 0 14px 34px rgba(23, 33, 17, 0.08);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(143, 188, 90, 0.28), transparent 34%),
-        radial-gradient(circle at top right, rgba(47, 111, 62, 0.22), transparent 28%),
-        linear-gradient(180deg, #eef5e8 0%, var(--bg) 42%, #e8efe4 100%);
+      background: var(--bg);
       font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
       line-height: 1.55;
       min-height: 100vh;
     }}
     .wrap {{
-      max-width: 1120px;
+      width: min(1120px, calc(100% - 2rem));
       margin: 0 auto;
-      padding: 3rem 1.25rem 4rem;
     }}
-    .hero {{
+    .site-header {{
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }}
+    .header-grid {{
       display: grid;
-      gap: 1.5rem;
-      grid-template-columns: 1.3fr 0.9fr;
-      align-items: start;
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+      gap: 2rem;
+      align-items: end;
+      padding: 3rem 0 2rem;
     }}
-    .panel {{
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      box-shadow: 0 20px 50px rgba(22, 33, 15, 0.08);
-      backdrop-filter: blur(8px);
-    }}
-    .lead {{
-      padding: 2rem;
-    }}
-    .meta {{
-      padding: 1.5rem;
-    }}
-    .stack > * + * {{
-      margin-top: 0.75rem;
+    .eyebrow {{
+      margin: 0 0 0.75rem;
+      color: var(--accent);
+      font-weight: 700;
     }}
     h1 {{
-      margin: 0 0 0.75rem;
+      margin: 0;
+      max-width: 12ch;
       font-family: "IBM Plex Serif", Georgia, serif;
-      font-size: clamp(2.3rem, 5vw, 4rem);
-      line-height: 0.95;
-      letter-spacing: -0.04em;
+      font-size: 3.6rem;
+      line-height: 1;
+      letter-spacing: 0;
+    }}
+    .lead {{
+      max-width: 66ch;
+      margin: 1rem 0 0;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }}
+    .archive-summary {{
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 0.4rem 1rem;
+      margin: 0;
+      padding: 1rem;
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }}
+    .archive-summary dt {{
+      color: var(--muted);
+      font-weight: 700;
+    }}
+    .archive-summary dd {{
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }}
+    main {{
+      padding: 2rem 0 4rem;
+    }}
+    .section {{
+      margin-top: 2rem;
+    }}
+    .section:first-child {{
+      margin-top: 0;
+    }}
+    .section-heading {{
+      display: flex;
+      justify-content: space-between;
+      gap: 1.5rem;
+      align-items: end;
+      margin-bottom: 1rem;
     }}
     h2 {{
-      margin: 0 0 0.75rem;
-      font-size: 1rem;
-      text-transform: uppercase;
-      letter-spacing: 0.09em;
-      color: var(--accent);
+      margin: 0;
+      font-size: 1.45rem;
+      line-height: 1.2;
+      letter-spacing: 0;
     }}
     h3 {{
       margin: 0;
-      font-size: 1.2rem;
+      font-size: 1.25rem;
+      line-height: 1.25;
     }}
     p {{
-      margin: 0 0 1rem;
-      color: var(--muted);
-    }}
-    .chip {{
-      display: inline-block;
-      padding: 0.35rem 0.7rem;
-      border-radius: 999px;
-      background: rgba(47, 111, 62, 0.08);
-      color: var(--accent);
-      font-size: 0.85rem;
-      font-weight: 600;
-      margin-bottom: 1rem;
-    }}
-    pre {{
-      margin: 1rem 0 0;
-      padding: 1rem 1.1rem;
-      border-radius: 14px;
-      background: var(--code-bg);
-      color: var(--code-text);
-      overflow-x: auto;
-      font-size: 0.95rem;
-    }}
-    code {{
-      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-    }}
-    ul {{
-      padding-left: 1.1rem;
+      margin: 0;
       color: var(--muted);
     }}
     a {{
-      color: var(--accent);
+      color: var(--accent-strong);
       text-decoration: none;
     }}
     a:hover {{
       text-decoration: underline;
     }}
-    .grid {{
-      margin-top: 1.5rem;
-      display: grid;
-      gap: 1.5rem;
-      grid-template-columns: 1fr 1fr;
+    code {{
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.95em;
     }}
-    .repo-grid {{
-      margin-top: 1.5rem;
-      display: grid;
-      gap: 1.5rem;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    pre {{
+      margin: 0;
+      padding: 1.1rem 1.2rem;
+      background: var(--code-bg);
+      color: var(--code-text);
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.94rem;
+      box-shadow: var(--shadow);
     }}
-    .repo-card {{
-      padding: 1.5rem;
+    .primary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }}
+    .primary-repo {{
+      display: grid;
+      gap: 0.8rem;
+      padding: 1.2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-top: 4px solid var(--accent);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+    .primary-repo.is-testing {{
+      border-top-color: var(--testing);
+    }}
+    .repo-topline {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }}
+    .channel-pill {{
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 1.75rem;
+      padding: 0.25rem 0.55rem;
+      border: 1px solid rgba(31, 107, 74, 0.24);
+      border-radius: 999px;
+      color: var(--accent-strong);
+      background: rgba(31, 107, 74, 0.08);
+      font-weight: 700;
+      font-size: 0.86rem;
+    }}
+    .channel-pill.is-testing,
+    .primary-repo.is-testing .channel-pill {{
+      border-color: rgba(138, 90, 18, 0.26);
+      color: var(--testing);
+      background: rgba(138, 90, 18, 0.09);
+    }}
+    .install-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 1rem;
+    }}
+    .repo-list {{
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }}
+    .repo-row {{
+      display: grid;
+      grid-template-columns: 6.5rem 10rem minmax(9rem, 1fr) 8rem minmax(0, 2fr);
+      gap: 1rem;
+      align-items: start;
+      padding: 0.95rem 1rem;
+      border-top: 1px solid var(--border);
+    }}
+    .repo-row:first-child {{
+      border-top: 0;
+    }}
+    .repo-name {{
+      font-weight: 800;
+    }}
+    .repo-path,
+    .repo-count,
+    .repo-packages {{
+      min-width: 0;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }}
+    .details-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
+      gap: 1rem;
+      align-items: start;
+    }}
+    .detail-panel {{
+      padding: 1.2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+    .detail-panel > * + * {{
+      margin-top: 0.8rem;
+    }}
+    .package-list {{
+      margin: 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+    }}
+    .package-list li + li {{
+      margin-top: 0.25rem;
     }}
     .fingerprint {{
-      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-      word-break: break-word;
       color: var(--text);
+      overflow-wrap: anywhere;
     }}
     @media (max-width: 860px) {{
-      .hero,
-      .grid {{
+      .header-grid,
+      .details-grid {{
         grid-template-columns: 1fr;
       }}
-      .wrap {{
-        padding-top: 1.5rem;
+      .section-heading {{
+        display: block;
+      }}
+      .section-heading p {{
+        margin-top: 0.5rem;
+      }}
+      h1 {{
+        max-width: none;
+        font-size: 2.55rem;
+      }}
+      .repo-row {{
+        grid-template-columns: 1fr;
+        gap: 0.35rem;
       }}
     }}
   </style>
 </head>
 <body>
-  <main class="wrap">
-    <section class="hero">
-      <article class="panel lead">
-        <div class="chip">Split SafeLibs apt repositories</div>
+  <header class="site-header">
+    <div class="wrap header-grid">
+      <div>
+        <p class="eyebrow">Signed apt repositories</p>
         <h1>SafeLibs Apt Repositories</h1>
-        <p>
-          Install stable packages from <code>/all/</code>, pick a per-library
-          stable repository, or use <code>/testing/all/</code> for the latest
-          buildable default-branch packages.
+        <p class="lead">
+          Stable packages live in <code>/all/</code>. Testing packages live in
+          <code>/testing/all/</code> when that channel is published. Per-library
+          repositories are listed after the aggregate repositories.
         </p>
+      </div>
+      <dl class="archive-summary">
+        <dt>Suite</dt>
+        <dd>{suite}</dd>
+        <dt>Component</dt>
+        <dd>{component}</dd>
+        <dt>Origin</dt>
+        <dd>{origin}</dd>
+        <dt>Key</dt>
+        <dd class="fingerprint">{fingerprint}</dd>
+      </dl>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="section" aria-labelledby="start-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="start-heading">Start Here</h2>
+          <p>Aggregate repositories combine the packages for each channel.</p>
+        </div>
+      </div>
+      <div class="primary-grid">
+{featured_repository_cards}
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="install-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="install-heading">{default_install_heading}</h2>
+          <p>{default_install_text}</p>
+        </div>
+      </div>
+      <div class="install-grid">
         <pre><code>sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
 curl -fsSL {default_repo_url}/{key_name}.gpg | sudo tee /etc/apt/keyrings/{key_name}.gpg > /dev/null
 curl -fsSL {default_repo_url}/{preferences_download} | sudo tee /etc/apt/preferences.d/{preferences_file} > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/{key_name}.gpg] {default_repo_url} {suite} {component}" | sudo tee /etc/apt/sources.list.d/{list_file} > /dev/null
 sudo apt-get update</code></pre>
-      </article>
-
-      <aside class="panel meta stack">
-        <div>
-          <h2>Archive</h2>
-          <p><strong>Suite:</strong> {suite}</p>
-          <p><strong>Component:</strong> {component}</p>
-          <p><strong>Origin:</strong> {origin}</p>
-        </div>
-        <div>
-          <h2>Key Fingerprint</h2>
-          <p class="fingerprint">{fingerprint}</p>
-        </div>
-        <div>
-          <h2>Project</h2>
-          <p><a href="{homepage}">{homepage}</a></p>
-        </div>
-      </aside>
+      </div>
     </section>
 
-    <section class="repo-grid">
-{repository_cards}
+    <section class="section" aria-labelledby="directory-heading">
+      <div class="section-heading">
+        <div>
+          <h2 id="directory-heading">Repository Directory</h2>
+          <p>Per-library repositories stay separate from the aggregate entries above.</p>
+        </div>
+      </div>
+      <ul class="repo-list">
+{repository_rows}
+      </ul>
     </section>
 
-    <section class="grid">
-      <article class="panel meta">
+    <section class="section details-grid">
+      <article class="detail-panel">
         <h2>Published Packages</h2>
-        <ul>
+        <ul class="package-list">
 {package_items}
         </ul>
       </article>
 
-      <article class="panel meta">
+      <article class="detail-panel">
         <h2>Repository Notes</h2>
         <p>{description}</p>
         <p>
@@ -203,6 +354,7 @@ sudo apt-get update</code></pre>
           default-branch port commits. Both channels are verified with
           <code>apt</code> inside Ubuntu 24.04 Docker before publication.
         </p>
+        <p><a href="{homepage}">{homepage}</a></p>
       </article>
     </section>
   </main>
