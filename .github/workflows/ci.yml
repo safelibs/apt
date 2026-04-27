@@ -45,7 +45,7 @@ jobs:
       repo_specs: ${{ steps.matrix.outputs.repos }}
     env:
       GH_TOKEN: ${{ secrets.SAFELIBS_REPO_TOKEN }}
-      BASE_URL: https://safelibs.github.io/apt/
+      BASE_URL: https://safelibs.org/apt/
     steps:
       - uses: actions/checkout@v4
 
