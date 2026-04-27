@@ -29,6 +29,30 @@ RELEASE_TAG_PREFIX = "build-"
 RELEASE_TAG_COMMIT_CHARS = 12
 DEFAULT_VALIDATOR_SITE_URL = "https://safelibs.github.io/validator/site-data.json"
 DEFAULT_VALIDATOR_MODE = "port-04-test"
+RUNTIME_PACKAGE_SUFFIX_EXCLUDES = ("-dev", "-doc", "-tools", "-progs", "-utils", "-tests")
+RUNTIME_PACKAGE_PREFIX_EXCLUDES = ("gir1.2-", "python3-")
+
+
+def runtime_packages_from_apt_packages(apt_packages: list[str]) -> list[str]:
+    """Mirror the validator runtime_packages heuristic.
+
+    Used as a fallback when the validator output predates the
+    runtime_packages field, so a freshly pushed validator does not have to
+    finish republishing before apt rebuilds succeed.
+    """
+
+    runtime: list[str] = []
+    for package in apt_packages:
+        if not isinstance(package, str) or not package:
+            continue
+        if not package.startswith("lib"):
+            continue
+        if any(package.endswith(suffix) for suffix in RUNTIME_PACKAGE_SUFFIX_EXCLUDES):
+            continue
+        if any(package.startswith(prefix) for prefix in RUNTIME_PACKAGE_PREFIX_EXCLUDES):
+            continue
+        runtime.append(package)
+    return runtime
 
 
 class BuildError(RuntimeError):
@@ -114,13 +138,13 @@ def load_config(path: Path) -> dict[str, Any]:
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise BuildError(f"{path} must contain a YAML mapping")
-    if "archive" not in data or "repositories" not in data:
-        raise BuildError(f"{path} must define archive and repositories")
+    if "archive" not in data:
+        raise BuildError(f"{path} must define archive")
     archive = data["archive"]
-    repositories = data["repositories"]
     if not isinstance(archive, dict):
         raise BuildError(f"{path} archive must be a YAML mapping")
-    if not isinstance(repositories, list) or not repositories:
+    repositories = data.get("repositories")
+    if repositories is not None and (not isinstance(repositories, list) or not repositories):
         raise BuildError(f"{path} must define a non-empty repositories list")
 
     for field in [
@@ -137,23 +161,24 @@ def load_config(path: Path) -> dict[str, Any]:
         if not str(archive.get(field) or "").strip():
             raise BuildError(f"{path} archive must define {field}")
 
-    seen_repository_names: set[str] = set()
-    for index, entry in enumerate(repositories, start=1):
-        if not isinstance(entry, dict):
-            raise BuildError(f"{path} repository #{index} must be a YAML mapping")
-        for field in ["name", "github_repo", "ref"]:
-            if not str(entry.get(field) or "").strip():
-                raise BuildError(f"{path} repository #{index} must define {field}")
-        repository_name = str(entry["name"]).strip()
-        if repository_name == ALL_REPOSITORY_NAME:
-            raise BuildError(
-                f"{path} repository #{index} name '{ALL_REPOSITORY_NAME}' is reserved"
-            )
-        if repository_name in seen_repository_names:
-            raise BuildError(f"{path} defines duplicate repository name: {repository_name}")
-        seen_repository_names.add(repository_name)
+    if repositories is not None:
+        seen_repository_names: set[str] = set()
+        for index, entry in enumerate(repositories, start=1):
+            if not isinstance(entry, dict):
+                raise BuildError(f"{path} repository #{index} must be a YAML mapping")
+            for field in ["name", "github_repo", "ref"]:
+                if not str(entry.get(field) or "").strip():
+                    raise BuildError(f"{path} repository #{index} must define {field}")
+            repository_name = str(entry["name"]).strip()
+            if repository_name == ALL_REPOSITORY_NAME:
+                raise BuildError(
+                    f"{path} repository #{index} name '{ALL_REPOSITORY_NAME}' is reserved"
+                )
+            if repository_name in seen_repository_names:
+                raise BuildError(f"{path} defines duplicate repository name: {repository_name}")
+            seen_repository_names.add(repository_name)
 
-        validate_build_config(path, entry.get("build"), f"repository #{index}")
+            validate_build_config(path, entry.get("build"), f"repository #{index}")
 
     testing = data.get("testing")
     if testing is not None:
@@ -203,6 +228,32 @@ def load_config(path: Path) -> dict[str, Any]:
         mode = validator.get("mode")
         if mode is not None and not str(mode).strip():
             raise BuildError(f"{path} validator mode must be non-empty when provided")
+    port_build_overrides = data.get("port_build_overrides")
+    if port_build_overrides is not None:
+        if not isinstance(port_build_overrides, list):
+            raise BuildError(f"{path} port_build_overrides must be a YAML list")
+        seen_override_names: set[str] = set()
+        for index, override in enumerate(port_build_overrides, start=1):
+            if not isinstance(override, dict):
+                raise BuildError(
+                    f"{path} port_build_overrides #{index} must be a YAML mapping"
+                )
+            override_name = str(override.get("name") or "").strip()
+            if not override_name:
+                raise BuildError(
+                    f"{path} port_build_overrides #{index} must define name"
+                )
+            if override_name in seen_override_names:
+                raise BuildError(
+                    f"{path} port_build_overrides defines duplicate name: {override_name}"
+                )
+            seen_override_names.add(override_name)
+            if "build" in override:
+                validate_build_config(
+                    path,
+                    override["build"],
+                    f"port_build_overrides #{index}",
+                )
     return data
 
 
@@ -222,7 +273,7 @@ def fetch_validator_site_data(site_url: str) -> dict[str, Any]:
         raise BuildError(f"failed to fetch validator site data from {site_url}: {exc}") from exc
 
 
-def validating_libraries(site_data: dict[str, Any], mode: str) -> set[str]:
+def _validating_proof(site_data: dict[str, Any], mode: str) -> dict[str, Any]:
     if not isinstance(site_data, dict):
         raise BuildError("validator site data must be a JSON object")
     if site_data.get("schema_version") != 2:
@@ -232,36 +283,102 @@ def validating_libraries(site_data: dict[str, Any], mode: str) -> set[str]:
     proofs = site_data.get("proofs") or []
     for proof in proofs:
         if isinstance(proof, dict) and proof.get("mode") == mode:
-            validating: set[str] = set()
-            for entry in proof.get("libraries") or []:
-                if not isinstance(entry, dict):
-                    continue
-                totals = entry.get("totals") or {}
-                if (
-                    totals.get("failed") == 0
-                    and totals.get("passed") == totals.get("cases")
-                    and totals.get("cases")
-                ):
-                    name = str(entry.get("library") or "").strip()
-                    if name:
-                        validating.add(name)
-            return validating
+            return proof
     raise BuildError(f"validator proof for mode {mode!r} not found in site data")
 
 
-def filter_repositories_by_validator(
-    config: dict[str, Any],
-    validating: set[str],
-) -> tuple[list[dict[str, Any]], list[str]]:
-    kept: list[dict[str, Any]] = []
-    dropped: list[str] = []
-    for entry in config.get("repositories") or []:
-        name = str(entry.get("name") or "").strip()
-        if name in validating:
-            kept.append(entry)
-        else:
-            dropped.append(name)
-    return kept, dropped
+def _is_fully_passing(library_entry: dict[str, Any]) -> bool:
+    totals = library_entry.get("totals") or {}
+    return (
+        totals.get("failed") == 0
+        and totals.get("passed") == totals.get("cases")
+        and bool(totals.get("cases"))
+    )
+
+
+def synthesize_repository_entries(
+    site_data: dict[str, Any],
+    mode: str,
+    *,
+    overrides: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build apt repository entries directly from validator site-data.
+
+    Each fully-passing library in the requested validator proof produces a
+    repository entry shaped like the legacy hand-maintained ``repositories[]``
+    blocks: name, github_repo, ref, verify_packages, verify_all_packages, and
+    a default checkout-artifacts ``build`` block. ``overrides`` (matched by
+    library name) layer optional per-port build overrides on top so the
+    ``checkout-artifacts`` default does not have to win every time.
+    """
+
+    proof = _validating_proof(site_data, mode)
+    overrides_by_name: dict[str, dict[str, Any]] = {}
+    if overrides:
+        for override in overrides:
+            if not isinstance(override, dict):
+                continue
+            name = str(override.get("name") or "").strip()
+            if name:
+                overrides_by_name[name] = override
+
+    entries: list[dict[str, Any]] = []
+    for library_entry in proof.get("libraries") or []:
+        if not isinstance(library_entry, dict):
+            continue
+        if not _is_fully_passing(library_entry):
+            continue
+        name = str(library_entry.get("library") or "").strip()
+        if not name:
+            continue
+        port_repository = str(library_entry.get("port_repository") or "").strip()
+        port_tag_ref = str(library_entry.get("port_tag_ref") or "").strip()
+        port_release_tag = str(library_entry.get("port_release_tag") or "").strip()
+        if not port_repository or not (port_tag_ref or port_release_tag):
+            raise BuildError(
+                f"validator entry for {name!r} is missing port repository metadata"
+            )
+        ref = (
+            port_tag_ref
+            if port_tag_ref
+            else f"refs/tags/{port_release_tag}"
+        )
+
+        verify_packages = list(library_entry.get("apt_packages") or [])
+        if not verify_packages:
+            raise BuildError(f"validator entry for {name!r} has no apt_packages")
+        verify_all_packages = list(library_entry.get("runtime_packages") or [])
+        if not verify_all_packages:
+            verify_all_packages = runtime_packages_from_apt_packages(verify_packages)
+        if not verify_all_packages:
+            raise BuildError(
+                f"validator entry for {name!r} has no runtime library packages; "
+                "neither validator runtime_packages nor the apt_packages list "
+                "yields a non-empty runtime subset"
+            )
+
+        entry: dict[str, Any] = {
+            "name": name,
+            "github_repo": port_repository,
+            "ref": ref,
+            "verify_packages": verify_packages,
+            "verify_all_packages": verify_all_packages,
+            "build": {
+                "mode": "checkout-artifacts",
+                "workdir": ".",
+                "artifact_globs": ["*.deb"],
+            },
+        }
+        override = overrides_by_name.get(name)
+        if override and "build" in override:
+            entry["build"] = copy_build_config(override["build"])
+        entries.append(entry)
+
+    return entries
+
+
+def copy_build_config(build: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(build))
 
 
 def dedupe(values: list[str]) -> list[str]:
@@ -1526,12 +1643,18 @@ def main() -> int:
         or str(validator_config.get("mode") or DEFAULT_VALIDATOR_MODE)
     )
 
-    stable_entries = list(config["repositories"])
-    if not args.skip_validator_filter:
+    if args.skip_validator_filter:
+        if not config.get("repositories"):
+            raise BuildError(
+                "skip_validator_filter requires repositories: to be defined in the config"
+            )
+        stable_entries = list(config["repositories"])
+    else:
         site_data = fetch_validator_site_data(validator_url)
-        validating = validating_libraries(site_data, validator_mode)
-        stable_entries, dropped_names = filter_repositories_by_validator(
-            config, validating
+        stable_entries = synthesize_repository_entries(
+            site_data,
+            validator_mode,
+            overrides=config.get("port_build_overrides") or [],
         )
         if not stable_entries:
             raise BuildError(
@@ -1539,10 +1662,9 @@ def main() -> int:
                 f"libraries; refusing to publish an empty stable channel"
             )
         print(
-            f"validator at {validator_url} mode {validator_mode!r} kept "
-            f"{len(stable_entries)} validating port(s); dropped "
-            f"{len(dropped_names)} non-validating entry/entries"
-            + (f": {', '.join(sorted(dropped_names))}" if dropped_names else "")
+            f"validator at {validator_url} mode {validator_mode!r} synthesized "
+            f"{len(stable_entries)} stable channel entry/entries from validator data: "
+            f"{', '.join(entry['name'] for entry in stable_entries)}"
         )
     testing_entries = resolve_testing_repositories(config)
     testing_config = config.get("testing") if isinstance(config.get("testing"), dict) else {}

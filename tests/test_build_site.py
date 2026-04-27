@@ -127,14 +127,19 @@ class BuildSiteTests(unittest.TestCase):
             with self.assertRaisesRegex(build_site.BuildError, "must contain a YAML mapping"):
                 build_site.load_config(config_path)
 
-    def test_load_config_requires_archive_and_repositories(self) -> None:
+    def test_load_config_requires_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "repositories.yml"
+            write_config(config_path, {"repositories": [repo_config()]})
+            with self.assertRaisesRegex(build_site.BuildError, "must define archive"):
+                build_site.load_config(config_path)
+
+    def test_load_config_allows_archive_only_config_for_validator_driven_publish(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "repositories.yml"
             write_config(config_path, {"archive": archive_config()})
-            with self.assertRaisesRegex(
-                build_site.BuildError, "must define archive and repositories"
-            ):
-                build_site.load_config(config_path)
+            loaded = build_site.load_config(config_path)
+        self.assertNotIn("repositories", loaded)
 
     def test_load_config_requires_archive_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,7 +306,7 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(loaded["repositories"][0]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", loaded["repositories"][0]["build"])
 
-    def test_validating_libraries_returns_only_fully_passing_entries(self) -> None:
+    def test_synthesize_repository_entries_keeps_only_fully_passing(self) -> None:
         site_data = {
             "schema_version": 2,
             "proofs": [
@@ -310,56 +315,146 @@ class BuildSiteTests(unittest.TestCase):
                     "libraries": [
                         {
                             "library": "alpha",
+                            "apt_packages": ["libalpha1", "libalpha-dev"],
+                            "runtime_packages": ["libalpha1"],
                             "totals": {"cases": 10, "passed": 10, "failed": 0},
+                            "port_repository": "safelibs/port-alpha",
+                            "port_tag_ref": "refs/tags/alpha/04-test",
+                            "port_release_tag": "build-alpha1234",
                         },
                         {
                             "library": "beta",
+                            "apt_packages": ["libbeta1"],
+                            "runtime_packages": ["libbeta1"],
                             "totals": {"cases": 10, "passed": 7, "failed": 3},
+                            "port_repository": "safelibs/port-beta",
+                            "port_tag_ref": "refs/tags/beta/04-test",
+                            "port_release_tag": "build-beta1234",
                         },
                         {
                             "library": "gamma",
-                            "totals": {"cases": 10, "passed": 9, "failed": 1},
+                            "apt_packages": ["libgamma1"],
+                            "runtime_packages": ["libgamma1"],
+                            "totals": {"cases": 10, "passed": 10, "failed": 0},
+                            "port_repository": "safelibs/port-gamma",
+                            "port_tag_ref": "refs/tags/gamma/04-test",
+                            "port_release_tag": "build-gamma1234",
                         },
                     ],
                 }
             ],
         }
 
-        result = build_site.validating_libraries(site_data, "port-04-test")
+        entries = build_site.synthesize_repository_entries(site_data, "port-04-test")
 
-        self.assertEqual(result, {"alpha"})
+        self.assertEqual([entry["name"] for entry in entries], ["alpha", "gamma"])
+        alpha = entries[0]
+        self.assertEqual(alpha["github_repo"], "safelibs/port-alpha")
+        self.assertEqual(alpha["ref"], "refs/tags/alpha/04-test")
+        self.assertEqual(alpha["verify_packages"], ["libalpha1", "libalpha-dev"])
+        self.assertEqual(alpha["verify_all_packages"], ["libalpha1"])
+        self.assertEqual(alpha["build"]["mode"], "checkout-artifacts")
+        self.assertEqual(alpha["build"]["artifact_globs"], ["*.deb"])
 
-    def test_validating_libraries_rejects_missing_proof_mode(self) -> None:
+    def test_synthesize_repository_entries_applies_build_overrides(self) -> None:
         site_data = {
             "schema_version": 2,
             "proofs": [
                 {
-                    "mode": "port-03-port",
-                    "libraries": [],
+                    "mode": "port-04-test",
+                    "libraries": [
+                        {
+                            "library": "alpha",
+                            "apt_packages": ["libalpha1"],
+                            "runtime_packages": ["libalpha1"],
+                            "totals": {"cases": 5, "passed": 5, "failed": 0},
+                            "port_repository": "safelibs/port-alpha",
+                            "port_tag_ref": "refs/tags/alpha/04-test",
+                            "port_release_tag": "build-alpha1234",
+                        }
+                    ],
+                }
+            ],
+        }
+        overrides = [
+            {
+                "name": "alpha",
+                "build": {
+                    "mode": "docker",
+                    "workdir": ".",
+                    "command": "build.sh",
+                    "artifact_globs": ["*.deb"],
+                },
+            }
+        ]
+
+        entries = build_site.synthesize_repository_entries(
+            site_data, "port-04-test", overrides=overrides
+        )
+
+        self.assertEqual(entries[0]["build"]["mode"], "docker")
+        self.assertEqual(entries[0]["build"]["command"], "build.sh")
+
+    def test_synthesize_repository_entries_falls_back_to_apt_packages_for_runtime(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [
+                {
+                    "mode": "port-04-test",
+                    "libraries": [
+                        {
+                            "library": "alpha",
+                            "apt_packages": ["libalpha1", "libalpha-dev"],
+                            "totals": {"cases": 5, "passed": 5, "failed": 0},
+                            "port_repository": "safelibs/port-alpha",
+                            "port_tag_ref": "refs/tags/alpha/04-test",
+                            "port_release_tag": "build-alpha1234",
+                        }
+                    ],
                 }
             ],
         }
 
-        with self.assertRaisesRegex(build_site.BuildError, r"validator proof for mode"):
-            build_site.validating_libraries(site_data, "port-04-test")
+        entries = build_site.synthesize_repository_entries(site_data, "port-04-test")
 
-    def test_validating_libraries_requires_supported_schema(self) -> None:
-        with self.assertRaisesRegex(build_site.BuildError, r"unsupported validator schema_version"):
-            build_site.validating_libraries({"schema_version": 1, "proofs": []}, "port-04-test")
+        self.assertEqual(entries[0]["verify_all_packages"], ["libalpha1"])
 
-    def test_filter_repositories_by_validator_keeps_validating_only(self) -> None:
-        config = {
-            "repositories": [
-                repo_config("alpha"),
-                repo_config("beta"),
-                repo_config("gamma"),
+    def test_synthesize_repository_entries_rejects_when_no_runtime_lib_resolves(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [
+                {
+                    "mode": "port-04-test",
+                    "libraries": [
+                        {
+                            "library": "alpha",
+                            "apt_packages": ["alpha-tools"],
+                            "totals": {"cases": 5, "passed": 5, "failed": 0},
+                            "port_repository": "safelibs/port-alpha",
+                            "port_tag_ref": "refs/tags/alpha/04-test",
+                            "port_release_tag": "build-alpha1234",
+                        }
+                    ],
+                }
             ],
         }
 
-        kept, dropped = build_site.filter_repositories_by_validator(config, {"alpha", "gamma"})
+        with self.assertRaisesRegex(build_site.BuildError, "no runtime library packages"):
+            build_site.synthesize_repository_entries(site_data, "port-04-test")
 
-        self.assertEqual([entry["name"] for entry in kept], ["alpha", "gamma"])
-        self.assertEqual(dropped, ["beta"])
+    def test_synthesize_repository_entries_rejects_missing_proof_mode(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [{"mode": "port-03-port", "libraries": []}],
+        }
+        with self.assertRaisesRegex(build_site.BuildError, "validator proof for mode"):
+            build_site.synthesize_repository_entries(site_data, "port-04-test")
+
+    def test_synthesize_repository_entries_requires_supported_schema(self) -> None:
+        with self.assertRaisesRegex(build_site.BuildError, "unsupported validator schema_version"):
+            build_site.synthesize_repository_entries(
+                {"schema_version": 1, "proofs": []}, "port-04-test"
+            )
 
     def test_fetch_validator_site_data_uses_fixture_when_env_set(self) -> None:
         site_data = {
@@ -404,137 +499,20 @@ class BuildSiteTests(unittest.TestCase):
 
         self.assertEqual(loaded["archive"]["suite"], "noble")
         self.assertEqual(loaded["archive"]["key_name"], "safelibs")
-        self.assertEqual(
-            [entry["name"] for entry in loaded["repositories"]],
-            [
-                "cjson",
-                "giflib",
-                "libarchive",
-                "libbz2",
-                "libcsv",
-                "libexif",
-                "libjansson",
-                "libjpeg-turbo",
-                "libjson",
-                "liblzma",
-                "libpng",
-                "libsdl",
-                "libsodium",
-                "libtiff",
-                "libuv",
-                "libvips",
-                "libwebp",
-                "libxml",
-                "libyaml",
-                "libzstd",
-            ],
-        )
-        repositories_by_name = {entry["name"]: entry for entry in loaded["repositories"]}
-        self.assertEqual(repositories_by_name["cjson"]["ref"], "refs/tags/build-de29489668c1")
-        self.assertEqual(repositories_by_name["cjson"]["build"]["mode"], "safe-debian")
-        verify_packages_by_name = {
-            entry["name"]: entry["verify_packages"]
-            for entry in loaded["repositories"]
-            if "verify_packages" in entry
+        self.assertNotIn("repositories", loaded)
+        self.assertEqual(loaded["validator"]["site_url"], build_site.DEFAULT_VALIDATOR_SITE_URL)
+        self.assertEqual(loaded["validator"]["mode"], build_site.DEFAULT_VALIDATOR_MODE)
+
+        port_overrides_by_name = {
+            entry["name"]: entry for entry in loaded.get("port_build_overrides") or []
         }
-        self.assertEqual(
-            verify_packages_by_name,
-            {
-                "cjson": ["libcjson-dev", "libcjson1"],
-                "giflib": ["libgif-dev", "libgif7"],
-                "libarchive": [
-                    "libarchive-dev",
-                    "libarchive-tools",
-                    "libarchive13t64",
-                ],
-                "libbz2": ["bzip2-doc", "bzip2", "libbz2-1.0", "libbz2-dev"],
-                "libcsv": ["libcsv-dev", "libcsv3"],
-                "libexif": ["libexif-dev", "libexif-doc", "libexif12"],
-                "libjansson": ["libjansson-dev", "libjansson4"],
-                "libjpeg-turbo": [
-                    "libjpeg-turbo-progs",
-                    "libjpeg-turbo8-dev",
-                    "libjpeg-turbo8",
-                    "libturbojpeg-java",
-                    "libturbojpeg0-dev",
-                    "libturbojpeg",
-                ],
-                "libjson": ["libjson-c-dev", "libjson-c5"],
-                "liblzma": ["liblzma-dev", "liblzma5"],
-                "libpng": ["libpng-dev", "libpng-tools", "libpng16-16t64"],
-                "libsdl": ["libsdl2-2.0-0", "libsdl2-dev", "libsdl2-tests"],
-                "libsodium": ["libsodium-dev", "libsodium23"],
-                "libtiff": ["libtiff-dev", "libtiff-tools", "libtiff6", "libtiffxx6"],
-                "libuv": ["libuv1-dev", "libuv1t64"],
-                "libvips": [
-                    "gir1.2-vips-8.0",
-                    "libvips-dev",
-                    "libvips-doc",
-                    "libvips-tools",
-                    "libvips42t64",
-                ],
-                "libwebp": [
-                    "libsharpyuv-dev",
-                    "libsharpyuv0",
-                    "libwebp-dev",
-                    "libwebp7",
-                    "libwebpdecoder3",
-                    "libwebpdemux2",
-                    "libwebpmux3",
-                    "webp",
-                ],
-                "libxml": ["libxml2-dev", "libxml2-utils", "libxml2", "python3-libxml2"],
-                "libyaml": ["libyaml-0-2", "libyaml-dev", "libyaml-doc"],
-                "libzstd": ["libzstd-dev", "libzstd1", "zstd"],
-            },
-        )
-        self.assertEqual(
-            {
-                entry["name"]: entry["verify_all_packages"]
-                for entry in loaded["repositories"]
-                if "verify_all_packages" in entry
-            },
-            {
-                "cjson": ["libcjson1"],
-                "giflib": ["libgif7"],
-                "libarchive": ["libarchive13t64"],
-                "libbz2": ["libbz2-1.0"],
-                "libcsv": ["libcsv3"],
-                "libexif": ["libexif12"],
-                "libjansson": ["libjansson4"],
-                "libjpeg-turbo": ["libjpeg-turbo8", "libturbojpeg"],
-                "libjson": ["libjson-c5"],
-                "liblzma": ["liblzma5"],
-                "libpng": ["libpng16-16t64"],
-                "libsdl": ["libsdl2-2.0-0"],
-                "libsodium": ["libsodium23"],
-                "libtiff": ["libtiff6"],
-                "libuv": ["libuv1t64"],
-                "libvips": ["libvips-doc"],
-                "libwebp": ["libwebp7"],
-                "libxml": ["libxml2"],
-                "libyaml": ["libyaml-0-2"],
-                "libzstd": ["libzstd1"],
-            },
-        )
-        self.assertEqual(repositories_by_name["libcsv"]["build"]["mode"], "checkout-artifacts")
-        self.assertNotIn("command", repositories_by_name["libcsv"]["build"])
-        self.assertEqual(repositories_by_name["libpng"]["build"]["mode"], "checkout-artifacts")
-        self.assertNotIn("command", repositories_by_name["libpng"]["build"])
-        self.assertEqual(repositories_by_name["libuv"]["ref"], "refs/tags/build-a2d0955c60f5")
-        self.assertEqual(repositories_by_name["libuv"]["build"]["mode"], "safe-debian")
-        self.assertEqual(repositories_by_name["libvips"]["build"]["mode"], "docker")
-        self.assertIn("build-check-install", repositories_by_name["libvips"]["build"]["command"])
+        self.assertIn("libpng", port_overrides_by_name)
+        self.assertEqual(port_overrides_by_name["libpng"]["build"]["mode"], "checkout-artifacts")
+        self.assertIn("libvips", port_overrides_by_name)
         self.assertIn(
-            "dpkg-architecture -qDEB_HOST_MULTIARCH",
-            repositories_by_name["libvips"]["build"]["command"],
+            "build-check-install",
+            port_overrides_by_name["libvips"]["build"]["command"],
         )
-        self.assertIn(
-            'cp -a build-check-install/lib/"$(dpkg-architecture -qDEB_HOST_MULTIARCH)"/libvips*.so*',
-            repositories_by_name["libvips"]["build"]["command"],
-        )
-        self.assertIn("DEB_BUILD_OPTIONS", repositories_by_name["libvips"]["build"]["command"])
-        self.assertIn("nocheck", repositories_by_name["libvips"]["build"]["command"])
         self.assertEqual(loaded["testing"]["discover"]["github_org"], "safelibs")
         self.assertTrue(loaded["testing"]["allow_build_failures"])
         self.assertEqual(loaded["testing"]["default_build"]["mode"], "safe-debian")
@@ -546,12 +524,6 @@ class BuildSiteTests(unittest.TestCase):
             'package-deb --out "$SAFEAPTREPO_OUTPUT/debs"',
             loaded["testing"]["repository_overrides"][0]["build"]["command"],
         )
-        self.assertIn(
-            'cp -v "$SAFEAPTREPO_OUTPUT"/debs/*.deb "$SAFEAPTREPO_OUTPUT"/',
-            loaded["testing"]["repository_overrides"][0]["build"]["command"],
-        )
-        self.assertEqual(loaded["validator"]["site_url"], build_site.DEFAULT_VALIDATOR_SITE_URL)
-        self.assertEqual(loaded["validator"]["mode"], build_site.DEFAULT_VALIDATOR_MODE)
 
     def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1667,19 +1639,29 @@ class BuildSiteTests(unittest.TestCase):
                                 "libraries": [
                                     {
                                         "library": "alpha",
+                                        "apt_packages": ["libalpha1", "libalpha-dev"],
+                                        "runtime_packages": ["libalpha1"],
                                         "totals": {
                                             "cases": 5,
                                             "passed": 5,
                                             "failed": 0,
                                         },
+                                        "port_repository": "safelibs/port-alpha",
+                                        "port_tag_ref": "refs/tags/alpha/04-test",
+                                        "port_release_tag": "build-alpha1234",
                                     },
                                     {
                                         "library": "beta",
+                                        "apt_packages": ["libbeta1"],
+                                        "runtime_packages": ["libbeta1"],
                                         "totals": {
                                             "cases": 5,
                                             "passed": 4,
                                             "failed": 1,
                                         },
+                                        "port_repository": "safelibs/port-beta",
+                                        "port_tag_ref": "refs/tags/beta/04-test",
+                                        "port_release_tag": "build-beta1234",
                                     },
                                 ],
                             }
@@ -1704,7 +1686,6 @@ class BuildSiteTests(unittest.TestCase):
                     "site_url": "https://example.invalid/site-data.json",
                     "mode": "port-04-test",
                 },
-                "repositories": [repo_config("alpha"), repo_config("beta")],
             }
 
             with (

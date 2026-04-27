@@ -65,42 +65,14 @@ testing:
         artifact_globs:
           - "*.deb"
 
-repositories:
-  - name: cjson
-    github_repo: safelibs/port-cjson
-    ref: refs/tags/build-de29489668c1
-    verify_packages:
-      - libcjson-dev
-      - libcjson1
-    verify_all_packages:
-      - libcjson1
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
-  - name: giflib
-    github_repo: safelibs/port-giflib
-    ref: refs/tags/build-8dd3019a8e99
-    verify_packages:
-      - libgif-dev
-      - libgif7
-    verify_all_packages:
-      - libgif7
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
+# Per-port build configs consumed only by tools/generate_port_ci.py to
+# render each safelibs/port-* CI workflow. The set of ports actually
+# published in the stable apt index is derived dynamically from the
+# validator (see the validator block above); this section only describes
+# *how* each port's CI builds its .deb artifacts when its build profile
+# departs from the safe-debian default.
+port_build_overrides:
   - name: libarchive
-    github_repo: safelibs/port-libarchive
-    ref: refs/tags/build-95a312cfb18f
-    verify_packages:
-      - libarchive-dev
-      - libarchive-tools
-      - libarchive13t64
-    verify_all_packages:
-      - libarchive13t64
     build:
       mode: safe-debian
       packages:
@@ -130,15 +102,6 @@ repositories:
         - "*.deb"
 
   - name: libbz2
-    github_repo: safelibs/port-libbz2
-    ref: refs/tags/build-8c4b1bee6d25
-    verify_packages:
-      - bzip2-doc
-      - bzip2
-      - libbz2-1.0
-      - libbz2-dev
-    verify_all_packages:
-      - libbz2-1.0
     build:
       mode: safe-debian
       setup: |
@@ -181,41 +144,13 @@ repositories:
         - "*.deb"
 
   - name: libcsv
-    github_repo: safelibs/port-libcsv
-    ref: refs/tags/build-91e798441fdd
-    verify_packages:
-      - libcsv-dev
-      - libcsv3
-    verify_all_packages:
-      - libcsv3
     build:
       mode: checkout-artifacts
       workdir: .
       artifact_globs:
         - "*.deb"
 
-  - name: libexif
-    github_repo: safelibs/port-libexif
-    ref: refs/tags/build-9f7fcf07e370
-    verify_packages:
-      - libexif-dev
-      - libexif-doc
-      - libexif12
-    verify_all_packages:
-      - libexif12
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
   - name: libjansson
-    github_repo: safelibs/port-libjansson
-    ref: refs/tags/build-32501acfb67e
-    verify_packages:
-      - libjansson-dev
-      - libjansson4
-    verify_all_packages:
-      - libjansson4
     build:
       mode: docker
       workdir: .
@@ -235,32 +170,7 @@ repositories:
       artifact_globs:
         - "*.deb"
 
-  - name: libjpeg-turbo
-    github_repo: safelibs/port-libjpeg-turbo
-    ref: refs/tags/build-27e232c22936
-    verify_packages:
-      - libjpeg-turbo-progs
-      - libjpeg-turbo8-dev
-      - libjpeg-turbo8
-      - libturbojpeg-java
-      - libturbojpeg0-dev
-      - libturbojpeg
-    verify_all_packages:
-      - libjpeg-turbo8
-      - libturbojpeg
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
   - name: libjson
-    github_repo: safelibs/port-libjson
-    ref: refs/tags/build-e25f4b433d01
-    verify_packages:
-      - libjson-c-dev
-      - libjson-c5
-    verify_all_packages:
-      - libjson-c5
     build:
       workdir: .
       packages:
@@ -280,13 +190,6 @@ repositories:
         - "*.deb"
 
   - name: liblzma
-    github_repo: safelibs/port-liblzma
-    ref: refs/tags/build-ebba850f8fae
-    verify_packages:
-      - liblzma-dev
-      - liblzma5
-    verify_all_packages:
-      - liblzma5
     build:
       mode: safe-debian
       setup: |
@@ -305,42 +208,13 @@ repositories:
         - "*.deb"
 
   - name: libpng
-    github_repo: safelibs/port-libpng
-    ref: refs/tags/build-57fa3d117156
-    verify_packages:
-      - libpng-dev
-      - libpng-tools
-      - libpng16-16t64
-    verify_all_packages:
-      - libpng16-16t64
     build:
       mode: checkout-artifacts
       workdir: .
       artifact_globs:
         - "*.deb"
 
-  - name: libsdl
-    github_repo: safelibs/port-libsdl
-    ref: refs/tags/build-14609a9a5844
-    verify_packages:
-      - libsdl2-2.0-0
-      - libsdl2-dev
-      - libsdl2-tests
-    verify_all_packages:
-      - libsdl2-2.0-0
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
   - name: libsodium
-    github_repo: safelibs/port-libsodium
-    ref: refs/tags/build-d1d241340f2e
-    verify_packages:
-      - libsodium-dev
-      - libsodium23
-    verify_all_packages:
-      - libsodium23
     build:
       mode: safe-debian
       packages:
@@ -361,15 +235,6 @@ repositories:
         - "*.deb"
 
   - name: libtiff
-    github_repo: safelibs/port-libtiff
-    ref: refs/tags/build-9e34df3e07fc
-    verify_packages:
-      - libtiff-dev
-      - libtiff-tools
-      - libtiff6
-      - libtiffxx6
-    verify_all_packages:
-      - libtiff6
     build:
       mode: safe-debian
       rustup_toolchain: stable-x86_64-unknown-linux-gnu
@@ -393,30 +258,7 @@ repositories:
       artifact_globs:
         - "*.deb"
 
-  - name: libuv
-    github_repo: safelibs/port-libuv
-    ref: refs/tags/build-a2d0955c60f5
-    verify_packages:
-      - libuv1-dev
-      - libuv1t64
-    verify_all_packages:
-      - libuv1t64
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
   - name: libvips
-    github_repo: safelibs/port-libvips
-    ref: refs/tags/build-12543f951c24
-    verify_packages:
-      - gir1.2-vips-8.0
-      - libvips-dev
-      - libvips-doc
-      - libvips-tools
-      - libvips42t64
-    verify_all_packages:
-      - libvips-doc
     build:
       mode: docker
       workdir: .
@@ -444,63 +286,7 @@ repositories:
       artifact_globs:
         - "*.deb"
 
-  - name: libwebp
-    github_repo: safelibs/port-libwebp
-    ref: refs/tags/build-d9437d8e3c87
-    verify_packages:
-      - libsharpyuv-dev
-      - libsharpyuv0
-      - libwebp-dev
-      - libwebp7
-      - libwebpdecoder3
-      - libwebpdemux2
-      - libwebpmux3
-      - webp
-    verify_all_packages:
-      - libwebp7
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
-  - name: libxml
-    github_repo: safelibs/port-libxml
-    ref: refs/tags/build-8af9d2976d24
-    verify_packages:
-      - libxml2-dev
-      - libxml2-utils
-      - libxml2
-      - python3-libxml2
-    verify_all_packages:
-      - libxml2
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
-  - name: libyaml
-    github_repo: safelibs/port-libyaml
-    ref: refs/tags/build-17f439b2dab0
-    verify_packages:
-      - libyaml-0-2
-      - libyaml-dev
-      - libyaml-doc
-    verify_all_packages:
-      - libyaml-0-2
-    build:
-      mode: safe-debian
-      artifact_globs:
-        - "*.deb"
-
   - name: libzstd
-    github_repo: safelibs/port-libzstd
-    ref: refs/tags/build-64056ff8056f
-    verify_packages:
-      - libzstd-dev
-      - libzstd1
-      - zstd
-    verify_all_packages:
-      - libzstd1
     build:
       workdir: .
       rustup_toolchain: 1.94.0

@@ -111,7 +111,7 @@ def build_entry_for(
     """Return the apt repo repository entry for this port, falling back to
     manual overrides or the default safe-debian build if the port is not
     listed in repositories.yml."""
-    for entry in config.get("repositories", []) or []:
+    for entry in config.get("port_build_overrides", []) or []:
         if str(entry.get("name")) == name:
             return entry
     override = UNLISTED_PORT_OVERRIDES.get(name)

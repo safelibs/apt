@@ -3,16 +3,17 @@
 This repository assembles and publishes the static SafeLibs apt repository for
 Ubuntu 24.04 on GitHub Pages.
 
-The checked-in stable channel in [`repositories.yml`](./repositories.yml)
-catalogs every `safelibs/port-*` repo with published SafeLibs `.deb` release
-assets, pinning each at its latest release-backed `build-<12-char-sha>` tag.
-At build time, `tools/build_site.py` fetches the SafeLibs validator at
-`https://safelibs.github.io/validator/site-data.json` (configurable via the
-`validator` block) and publishes only the entries whose live proof in mode
-`port-04-test` reports zero failed cases. As validator results change, the
-emitted apt index automatically follows: ports that regress drop off the
-stable channel without any config edits, and ports that begin passing are
-picked up on the next site rebuild.
+The stable channel is generated dynamically at build time from the SafeLibs
+validator at `https://safelibs.github.io/validator/site-data.json`
+(configurable via the `validator` block in
+[`repositories.yml`](./repositories.yml)). For each fully-passing library in
+the configured proof mode (default `port-04-test`), `tools/build_site.py`
+synthesizes a stable-channel entry — port repository, pinned tag/commit,
+verify packages, and runtime subset — directly from the validator payload.
+There is no checked-in list of ports to publish: as validator results change,
+the emitted apt index follows automatically. Ports that regress drop off the
+stable channel and ports that begin passing get picked up on the next site
+rebuild.
 
 The testing channel is discovered at build time from non-archived
 `safelibs/port-*` repos. It resolves each repo's current default branch and
@@ -21,11 +22,11 @@ release, regardless of whether the repo has a `04-test` tag.
 
 ## Layout
 
-- `repositories.yml`: source of truth for which `safelibs/port-*` repos and refs
-  to publish for stable, plus testing-channel discovery and port-CI build
-  overrides
-- `tools/build_site.py`: download release artifacts, index, sign, and render the
-  Pages site
+- `repositories.yml`: archive metadata, validator source URL, testing-channel
+  discovery, and per-port build-recipe overrides consumed only by the port-CI
+  generator
+- `tools/build_site.py`: synthesize stable entries from the validator,
+  download release artifacts, index, sign, and render the Pages site
 - `scripts/verify-in-ubuntu-docker.sh`: end-to-end `apt` verification in an
   Ubuntu 24.04 container
 - `.github/workflows/ci.yml`: unit tests plus full build-and-verify
@@ -33,15 +34,20 @@ release, regardless of whether the repo has a `04-test` tag.
 
 ## Config
 
-Each repository entry defines:
+`repositories.yml` defines:
 
-- the GitHub repo and pinned ref
-- optionally, which packages should be installed during Docker verification
-- the per-port CI build configuration used by `tools/generate_port_ci.py`
-- artifact globs to download from each per-commit GitHub release
+- `archive`: signing, Pages metadata, the default Ubuntu 24.04 image, and
+  the generated `apt` pin priority
+- `validator`: the validator site-data URL and proof mode used to pick the
+  stable port set
+- `testing`: discovery rules for the testing channel plus per-port build
+  overrides for testing-channel artifact production
+- `port_build_overrides`: per-port build recipes consumed only by
+  `tools/generate_port_ci.py` when rendering each `safelibs/port-*` repo's
+  CI workflow. Any port not listed here uses the default safe-debian build.
 
-The `archive` block also defines signing, Pages metadata, the default Ubuntu
-24.04 image, and the generated `apt` pin priority.
+The set of ports actually published in the stable apt index is derived
+entirely from the validator — no port list lives in `repositories.yml`.
 
 Package builds happen in the individual `safelibs/port-*` repositories. Their
 generated `build-debs` workflow publishes a GitHub release named
