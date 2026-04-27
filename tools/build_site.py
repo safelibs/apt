@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,8 @@ UBUNTU_24_04_RUST_VERSION = "1.75"
 MAX_FAILURE_OUTPUT_CHARS = 12000
 RELEASE_TAG_PREFIX = "build-"
 RELEASE_TAG_COMMIT_CHARS = 12
+DEFAULT_VALIDATOR_SITE_URL = "https://safelibs.github.io/validator/site-data.json"
+DEFAULT_VALIDATOR_MODE = "port-04-test"
 
 
 class BuildError(RuntimeError):
@@ -189,7 +193,75 @@ def load_config(path: Path) -> dict[str, Any]:
                     override["build"],
                     f"testing repository override #{index}",
                 )
+    validator = data.get("validator")
+    if validator is not None:
+        if not isinstance(validator, dict):
+            raise BuildError(f"{path} validator must be a YAML mapping")
+        site_url = validator.get("site_url")
+        if site_url is not None and not str(site_url).strip():
+            raise BuildError(f"{path} validator site_url must be non-empty when provided")
+        mode = validator.get("mode")
+        if mode is not None and not str(mode).strip():
+            raise BuildError(f"{path} validator mode must be non-empty when provided")
     return data
+
+
+def fetch_validator_site_data(site_url: str) -> dict[str, Any]:
+    fixture_path = os.environ.get("SAFEAPTREPO_VALIDATOR_FIXTURE")
+    if fixture_path:
+        try:
+            return json.loads(Path(fixture_path).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BuildError(f"failed to load validator fixture {fixture_path}: {exc}") from exc
+
+    request = urllib.request.Request(site_url, headers={"User-Agent": "safelibs-apt"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise BuildError(f"failed to fetch validator site data from {site_url}: {exc}") from exc
+
+
+def validating_libraries(site_data: dict[str, Any], mode: str) -> set[str]:
+    if not isinstance(site_data, dict):
+        raise BuildError("validator site data must be a JSON object")
+    if site_data.get("schema_version") != 2:
+        raise BuildError(
+            f"unsupported validator schema_version {site_data.get('schema_version')!r}; expected 2"
+        )
+    proofs = site_data.get("proofs") or []
+    for proof in proofs:
+        if isinstance(proof, dict) and proof.get("mode") == mode:
+            validating: set[str] = set()
+            for entry in proof.get("libraries") or []:
+                if not isinstance(entry, dict):
+                    continue
+                totals = entry.get("totals") or {}
+                if (
+                    totals.get("failed") == 0
+                    and totals.get("passed") == totals.get("cases")
+                    and totals.get("cases")
+                ):
+                    name = str(entry.get("library") or "").strip()
+                    if name:
+                        validating.add(name)
+            return validating
+    raise BuildError(f"validator proof for mode {mode!r} not found in site data")
+
+
+def filter_repositories_by_validator(
+    config: dict[str, Any],
+    validating: set[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    kept: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    for entry in config.get("repositories") or []:
+        name = str(entry.get("name") or "").strip()
+        if name in validating:
+            kept.append(entry)
+        else:
+            dropped.append(name)
+    return kept, dropped
 
 
 def dedupe(values: list[str]) -> list[str]:
@@ -1416,6 +1488,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", type=Path, default=Path(".work"))
     parser.add_argument("--base-url", default="")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument(
+        "--validator-url",
+        default=None,
+        help="Override the validator site-data URL used to filter the stable channel.",
+    )
+    parser.add_argument(
+        "--validator-mode",
+        default=None,
+        help="Override the validator proof mode whose passing libraries become the stable selection.",
+    )
+    parser.add_argument(
+        "--skip-validator-filter",
+        action="store_true",
+        help="Skip dynamic validator filtering and publish every entry from repositories.yml.",
+    )
     return parser.parse_args()
 
 
@@ -1429,7 +1516,34 @@ def main() -> int:
     repository_template_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
     landing_template_path = Path(__file__).resolve().parent.parent / "templates" / "landing.html"
 
+    validator_config = config.get("validator") if isinstance(config.get("validator"), dict) else {}
+    validator_url = (
+        args.validator_url
+        or str(validator_config.get("site_url") or DEFAULT_VALIDATOR_SITE_URL)
+    )
+    validator_mode = (
+        args.validator_mode
+        or str(validator_config.get("mode") or DEFAULT_VALIDATOR_MODE)
+    )
+
     stable_entries = list(config["repositories"])
+    if not args.skip_validator_filter:
+        site_data = fetch_validator_site_data(validator_url)
+        validating = validating_libraries(site_data, validator_mode)
+        stable_entries, dropped_names = filter_repositories_by_validator(
+            config, validating
+        )
+        if not stable_entries:
+            raise BuildError(
+                f"validator at {validator_url} mode {validator_mode!r} reports no validating "
+                f"libraries; refusing to publish an empty stable channel"
+            )
+        print(
+            f"validator at {validator_url} mode {validator_mode!r} kept "
+            f"{len(stable_entries)} validating port(s); dropped "
+            f"{len(dropped_names)} non-validating entry/entries"
+            + (f": {', '.join(sorted(dropped_names))}" if dropped_names else "")
+        )
     testing_entries = resolve_testing_repositories(config)
     testing_config = config.get("testing") if isinstance(config.get("testing"), dict) else {}
     testing_allow_failures = bool(testing_config.get("allow_build_failures", False))

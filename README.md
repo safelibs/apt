@@ -3,31 +3,16 @@
 This repository assembles and publishes the static SafeLibs apt repository for
 Ubuntu 24.04 on GitHub Pages.
 
-As of April 21, 2026, the checked-in stable channel in
-[`repositories.yml`](./repositories.yml) tracks the latest release-backed
-`build-<12-char-sha>` tag for each current `safelibs/port-*` repo that has
-published SafeLibs `.deb` release assets:
-
-- `safelibs/port-cjson` at `refs/tags/build-de29489668c1`
-- `safelibs/port-giflib` at `refs/tags/build-8dd3019a8e99`
-- `safelibs/port-libarchive` at `refs/tags/build-95a312cfb18f`
-- `safelibs/port-libbz2` at `refs/tags/build-8c4b1bee6d25`
-- `safelibs/port-libcsv` at `refs/tags/build-91e798441fdd`
-- `safelibs/port-libexif` at `refs/tags/build-9f7fcf07e370`
-- `safelibs/port-libjansson` at `refs/tags/build-32501acfb67e`
-- `safelibs/port-libjpeg-turbo` at `refs/tags/build-27e232c22936`
-- `safelibs/port-libjson` at `refs/tags/build-e25f4b433d01`
-- `safelibs/port-liblzma` at `refs/tags/build-ebba850f8fae`
-- `safelibs/port-libpng` at `refs/tags/build-57fa3d117156`
-- `safelibs/port-libsdl` at `refs/tags/build-14609a9a5844`
-- `safelibs/port-libsodium` at `refs/tags/build-d1d241340f2e`
-- `safelibs/port-libtiff` at `refs/tags/build-9e34df3e07fc`
-- `safelibs/port-libuv` at `refs/tags/build-a2d0955c60f5`
-- `safelibs/port-libvips` at `refs/tags/build-12543f951c24`
-- `safelibs/port-libwebp` at `refs/tags/build-d9437d8e3c87`
-- `safelibs/port-libxml` at `refs/tags/build-8af9d2976d24`
-- `safelibs/port-libyaml` at `refs/tags/build-17f439b2dab0`
-- `safelibs/port-libzstd` at `refs/tags/build-64056ff8056f`
+The checked-in stable channel in [`repositories.yml`](./repositories.yml)
+catalogs every `safelibs/port-*` repo with published SafeLibs `.deb` release
+assets, pinning each at its latest release-backed `build-<12-char-sha>` tag.
+At build time, `tools/build_site.py` fetches the SafeLibs validator at
+`https://safelibs.github.io/validator/site-data.json` (configurable via the
+`validator` block) and publishes only the entries whose live proof in mode
+`port-04-test` reports zero failed cases. As validator results change, the
+emitted apt index automatically follows: ports that regress drop off the
+stable channel without any config edits, and ports that begin passing are
+picked up on the next site rebuild.
 
 The testing channel is discovered at build time from non-archived
 `safelibs/port-*` repos. It resolves each repo's current default branch and
@@ -68,8 +53,8 @@ assets, and then publishes the signed apt indexes.
 The generated site now publishes:
 
 - `/all/`: the stable aggregate repository with every tagged SafeLibs package
-- `/<library>/`: one stable repository per tagged library, for example
-  `/libjson/`, `/libpng/`, and `/libzstd/`
+- `/<library>/`: one stable repository per validating tagged library
+  (the exact set follows the live validator)
 - `/testing/all/`: the testing aggregate repository with every latest
   default-branch SafeLibs package whose release artifacts downloaded
   successfully

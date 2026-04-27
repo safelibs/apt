@@ -301,6 +301,81 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(loaded["repositories"][0]["build"]["mode"], "checkout-artifacts")
         self.assertNotIn("command", loaded["repositories"][0]["build"])
 
+    def test_validating_libraries_returns_only_fully_passing_entries(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [
+                {
+                    "mode": "port-04-test",
+                    "libraries": [
+                        {
+                            "library": "alpha",
+                            "totals": {"cases": 10, "passed": 10, "failed": 0},
+                        },
+                        {
+                            "library": "beta",
+                            "totals": {"cases": 10, "passed": 7, "failed": 3},
+                        },
+                        {
+                            "library": "gamma",
+                            "totals": {"cases": 10, "passed": 9, "failed": 1},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        result = build_site.validating_libraries(site_data, "port-04-test")
+
+        self.assertEqual(result, {"alpha"})
+
+    def test_validating_libraries_rejects_missing_proof_mode(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [
+                {
+                    "mode": "port-03-port",
+                    "libraries": [],
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(build_site.BuildError, r"validator proof for mode"):
+            build_site.validating_libraries(site_data, "port-04-test")
+
+    def test_validating_libraries_requires_supported_schema(self) -> None:
+        with self.assertRaisesRegex(build_site.BuildError, r"unsupported validator schema_version"):
+            build_site.validating_libraries({"schema_version": 1, "proofs": []}, "port-04-test")
+
+    def test_filter_repositories_by_validator_keeps_validating_only(self) -> None:
+        config = {
+            "repositories": [
+                repo_config("alpha"),
+                repo_config("beta"),
+                repo_config("gamma"),
+            ],
+        }
+
+        kept, dropped = build_site.filter_repositories_by_validator(config, {"alpha", "gamma"})
+
+        self.assertEqual([entry["name"] for entry in kept], ["alpha", "gamma"])
+        self.assertEqual(dropped, ["beta"])
+
+    def test_fetch_validator_site_data_uses_fixture_when_env_set(self) -> None:
+        site_data = {
+            "schema_version": 2,
+            "proofs": [{"mode": "port-04-test", "libraries": []}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "fixture.json"
+            fixture.write_text(json.dumps(site_data))
+            with mock.patch.dict(os.environ, {"SAFEAPTREPO_VALIDATOR_FIXTURE": str(fixture)}):
+                with mock.patch("tools.build_site.urllib.request.urlopen") as urlopen_mock:
+                    loaded = build_site.fetch_validator_site_data("https://example.invalid/validator.json")
+
+        urlopen_mock.assert_not_called()
+        self.assertEqual(loaded, site_data)
+
     def test_load_config_allows_safe_debian_without_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "repositories.yml"
@@ -475,6 +550,8 @@ class BuildSiteTests(unittest.TestCase):
             'cp -v "$SAFEAPTREPO_OUTPUT"/debs/*.deb "$SAFEAPTREPO_OUTPUT"/',
             loaded["testing"]["repository_overrides"][0]["build"]["command"],
         )
+        self.assertEqual(loaded["validator"]["site_url"], build_site.DEFAULT_VALIDATOR_SITE_URL)
+        self.assertEqual(loaded["validator"]["mode"], build_site.DEFAULT_VALIDATOR_MODE)
 
     def test_clone_or_update_repo_refreshes_existing_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1435,6 +1512,9 @@ class BuildSiteTests(unittest.TestCase):
                 workspace=workspace,
                 base_url="",
                 skip_build=True,
+                validator_url=None,
+                validator_mode=None,
+                skip_validator_filter=True,
             )
             config = {"archive": archive_config(), "repositories": [repo_config("alpha")]}
 
@@ -1470,6 +1550,9 @@ class BuildSiteTests(unittest.TestCase):
                 workspace=workspace,
                 base_url="",
                 skip_build=True,
+                validator_url=None,
+                validator_mode=None,
+                skip_validator_filter=True,
             )
             config = {
                 "archive": archive_config(),
@@ -1527,6 +1610,9 @@ class BuildSiteTests(unittest.TestCase):
                 workspace=workspace,
                 base_url="https://example.invalid/apt/",
                 skip_build=True,
+                validator_url=None,
+                validator_mode=None,
+                skip_validator_filter=True,
             )
 
             with (
@@ -1560,6 +1646,81 @@ class BuildSiteTests(unittest.TestCase):
                 ],
             )
 
+    def test_main_filters_repositories_by_live_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "workspace"
+            output = tmp_path / "site"
+            artifact_a = workspace / "artifacts" / "alpha" / "a.deb"
+            artifact_a.parent.mkdir(parents=True)
+            artifact_a.write_text("a")
+            (workspace / "artifacts" / "beta").mkdir(parents=True)
+
+            fixture_path = tmp_path / "validator.json"
+            fixture_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "proofs": [
+                            {
+                                "mode": "port-04-test",
+                                "libraries": [
+                                    {
+                                        "library": "alpha",
+                                        "totals": {
+                                            "cases": 5,
+                                            "passed": 5,
+                                            "failed": 0,
+                                        },
+                                    },
+                                    {
+                                        "library": "beta",
+                                        "totals": {
+                                            "cases": 5,
+                                            "passed": 4,
+                                            "failed": 1,
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                )
+            )
+
+            args = argparse.Namespace(
+                config=tmp_path / "repositories.yml",
+                output=output,
+                workspace=workspace,
+                base_url="",
+                skip_build=True,
+                validator_url=None,
+                validator_mode=None,
+                skip_validator_filter=False,
+            )
+            config = {
+                "archive": archive_config(),
+                "validator": {
+                    "site_url": "https://example.invalid/site-data.json",
+                    "mode": "port-04-test",
+                },
+                "repositories": [repo_config("alpha"), repo_config("beta")],
+            }
+
+            with (
+                mock.patch("tools.build_site.parse_args", return_value=args),
+                mock.patch("tools.build_site.load_config", return_value=config),
+                mock.patch("tools.build_site.generate_split_site") as generate_mock,
+                mock.patch.dict(
+                    os.environ,
+                    {"SAFEAPTREPO_VALIDATOR_FIXTURE": str(fixture_path)},
+                ),
+            ):
+                result = build_site.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(generate_mock.call_args.args[1], {"alpha": [artifact_a]})
+
     def test_main_build_flow_downloads_release_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1571,6 +1732,9 @@ class BuildSiteTests(unittest.TestCase):
                 workspace=workspace,
                 base_url="https://override.invalid/repo/",
                 skip_build=False,
+                validator_url=None,
+                validator_mode=None,
+                skip_validator_filter=True,
             )
             config = {
                 "archive": {

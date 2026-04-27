@@ -18,6 +18,10 @@ archive:
     - rsync
     - xz-utils
 
+validator:
+  site_url: https://safelibs.github.io/validator/site-data.json
+  mode: port-04-test
+
 testing:
   discover:
     github_org: safelibs
