@@ -43,6 +43,8 @@ RUNTIME_PACKAGE_SUFFIX_EXCLUDES = (
     "-ocaml",
 )
 RUNTIME_PACKAGE_PREFIX_EXCLUDES = ("gir1.2-", "python3-")
+SOURCE_ARTIFACT_PATTERNS = ("*.dsc", "*.orig.tar.*", "*.debian.tar.*")
+SOURCE_DSC_SUFFIX = ".dsc"
 
 
 def runtime_packages_from_apt_packages(apt_packages: list[str]) -> list[str]:
@@ -81,6 +83,15 @@ class PackageInfo:
 
 
 @dataclass(frozen=True)
+class SourceInfo:
+    source: str
+    version: str
+    dsc_path: Path
+    pool_path: Path
+    files: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
 class PublishedRepository:
     channel: str
     name: str
@@ -90,6 +101,7 @@ class PublishedRepository:
     package_infos: tuple[PackageInfo, ...]
     verify_packages: tuple[str, ...] = ()
     verify_all_packages: tuple[str, ...] = ()
+    source_infos: tuple[SourceInfo, ...] = ()
 
 
 def run(
@@ -937,6 +949,131 @@ def stage_packages(site_root: Path, component: str, package_paths: list[Path]) -
     return infos
 
 
+def is_source_artifact(path: Path) -> bool:
+    name = path.name
+    if name.endswith(SOURCE_DSC_SUFFIX):
+        return True
+    return ".orig.tar." in name or ".debian.tar." in name
+
+
+def parse_dsc(dsc_path: Path) -> tuple[str, str, list[str]]:
+    """Return (Source, Version, file_basenames) extracted from a .dsc file.
+
+    Handles both clearsigned and plain .dsc inputs and dedupes basenames
+    referenced from any of Files / Checksums-Sha1 / Checksums-Sha256.
+    """
+
+    text = dsc_path.read_text()
+    if text.startswith("-----BEGIN PGP SIGNED MESSAGE-----"):
+        _, _, rest = text.partition("\n\n")
+        signature_marker = rest.find("\n-----BEGIN PGP SIGNATURE-----")
+        if signature_marker >= 0:
+            rest = rest[:signature_marker]
+        text = rest
+
+    multiline_fields = {"Files", "Checksums-Sha1", "Checksums-Sha256"}
+    source = ""
+    version = ""
+    seen_files: dict[str, None] = {}
+    current_field: str | None = None
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            current_field = None
+            continue
+        if raw_line[0] in (" ", "\t"):
+            if current_field in multiline_fields:
+                parts = raw_line.split()
+                if len(parts) >= 3:
+                    seen_files.setdefault(parts[-1], None)
+            continue
+        current_field = None
+        if ":" not in raw_line:
+            continue
+        name, _, value = raw_line.partition(":")
+        name = name.strip()
+        value = value.strip()
+        if name in multiline_fields:
+            current_field = name
+        elif name == "Source" and not source:
+            source = value
+        elif name == "Version" and not version:
+            version = value
+    if not source:
+        raise BuildError(f"missing Source field in {dsc_path}")
+    return source, version, list(seen_files)
+
+
+def stage_source_packages(
+    site_root: Path,
+    component: str,
+    source_paths: list[Path],
+) -> list[SourceInfo]:
+    if not source_paths:
+        return []
+    by_basename: dict[str, Path] = {}
+    for path in source_paths:
+        existing = by_basename.get(path.name)
+        if existing is not None and existing != path:
+            raise BuildError(
+                f"duplicate source artifact basename {path.name!r}: {existing} vs {path}"
+            )
+        by_basename[path.name] = path
+
+    dsc_paths = sorted(
+        (path for path in source_paths if path.suffix == SOURCE_DSC_SUFFIX),
+        key=lambda item: item.name,
+    )
+    if not dsc_paths:
+        return []
+
+    infos: list[SourceInfo] = []
+    for dsc_path in dsc_paths:
+        source, version, file_names = parse_dsc(dsc_path)
+        pool_rel = Path("pool") / component / source[0] / source
+        dest_dir = site_root / pool_rel
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dsc_dest = dest_dir / dsc_path.name
+        shutil.copy2(dsc_path, dsc_dest)
+        copied: list[Path] = [dsc_dest]
+        for file_name in file_names:
+            sibling = by_basename.get(file_name)
+            if sibling is None:
+                raise BuildError(
+                    f"{dsc_path.name} references {file_name}, but it was not present "
+                    "in the downloaded source artifacts"
+                )
+            file_dest = dest_dir / file_name
+            if not file_dest.exists():
+                shutil.copy2(sibling, file_dest)
+            copied.append(file_dest)
+        infos.append(
+            SourceInfo(
+                source=source,
+                version=version,
+                dsc_path=dsc_dest,
+                pool_path=pool_rel / dsc_path.name,
+                files=tuple(copied),
+            )
+        )
+    return infos
+
+
+def write_source_indexes(site_root: Path, suite: str, component: str) -> bool:
+    sources_output = run(
+        ["apt-ftparchive", "sources", "pool"],
+        cwd=site_root,
+        capture_output=True,
+    ).stdout
+    if not sources_output.strip():
+        return False
+    source_dir = site_root / "dists" / suite / component / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    sources_path = source_dir / "Sources"
+    sources_path.write_text(sources_output)
+    run(["gzip", "-9", "-kf", str(sources_path)])
+    return True
+
+
 def split_stanzas(raw_text: str) -> list[str]:
     stanzas = [chunk.strip() for chunk in raw_text.split("\n\n")]
     return [f"{chunk}\n" for chunk in stanzas if chunk]
@@ -1042,8 +1179,13 @@ def write_release_file(
     component: str,
     architectures: list[str],
     archive: dict[str, Any],
+    *,
+    has_sources: bool = False,
 ) -> None:
     release_path = site_root / "dists" / suite / "Release"
+    release_architectures = list(architectures)
+    if has_sources and "source" not in release_architectures:
+        release_architectures.append("source")
     release_text = run(
         [
             "apt-ftparchive",
@@ -1056,7 +1198,7 @@ def write_release_file(
             "-o",
             f"APT::FTPArchive::Release::Codename={suite}",
             "-o",
-            f"APT::FTPArchive::Release::Architectures={' '.join(architectures)}",
+            f"APT::FTPArchive::Release::Architectures={' '.join(release_architectures)}",
             "-o",
             f"APT::FTPArchive::Release::Components={component}",
             "-o",
@@ -1400,6 +1542,14 @@ def write_manifest(
                     {"name": info.name, "version": info.version, "architecture": info.architecture}
                     for info in sorted(repo.package_infos, key=lambda item: item.name)
                 ],
+                "source_packages": [
+                    {
+                        "source": info.source,
+                        "version": info.version,
+                        "dsc": info.pool_path.as_posix(),
+                    }
+                    for info in sorted(repo.source_infos, key=lambda item: item.source)
+                ],
                 "verify_packages": list(repo.verify_packages),
                 "verify_all_packages": list(repo.verify_all_packages),
             }
@@ -1434,7 +1584,8 @@ def generate_site_from_artifacts(
     channel_name: str = STABLE_CHANNEL_NAME,
     is_aggregate: bool | None = None,
     signing_key: tuple[Path, str, str] | None = None,
-) -> list[PackageInfo]:
+    source_paths: list[Path] | None = None,
+) -> tuple[list[PackageInfo], list[SourceInfo]]:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
@@ -1447,9 +1598,19 @@ def generate_site_from_artifacts(
     if not architectures:
         raise BuildError("no package indexes were generated")
 
+    source_infos = stage_source_packages(output_dir, component, list(source_paths or []))
+    has_sources = write_source_indexes(output_dir, suite, component) if source_infos else False
+
     homedir, fingerprint, passphrase = signing_key or prepare_signing_key()
     export_public_key_binary(homedir, fingerprint, output_dir, str(archive["key_name"]))
-    write_release_file(output_dir, suite, component, architectures, archive)
+    write_release_file(
+        output_dir,
+        suite,
+        component,
+        architectures,
+        archive,
+        has_sources=has_sources,
+    )
     sign_release(output_dir, suite, homedir, fingerprint, passphrase)
     resolved_repository_id = repository_id or repository_name
     resolved_is_aggregate = (
@@ -1468,7 +1629,7 @@ def generate_site_from_artifacts(
         channel_name,
         resolved_is_aggregate,
     )
-    return infos
+    return infos, source_infos
 
 
 def generate_split_site(
@@ -1484,6 +1645,7 @@ def generate_split_site(
     signing_key: tuple[Path, str, str] | None = None,
     clean_output: bool = True,
     render_landing: bool = True,
+    repository_source_artifacts: dict[str, list[Path]] | None = None,
 ) -> list[PublishedRepository]:
     configured_names = [str(entry["name"]) for entry in config["repositories"]]
     if ALL_REPOSITORY_NAME in configured_names:
@@ -1497,6 +1659,17 @@ def generate_split_site(
         raise BuildError(
             "unexpected artifacts for unknown repositories: " + ", ".join(unexpected_names)
         )
+    source_artifacts = dict(repository_source_artifacts or {})
+    if ALL_REPOSITORY_NAME in source_artifacts:
+        raise BuildError(f"repository name '{ALL_REPOSITORY_NAME}' is reserved")
+    unexpected_source_names = sorted(
+        name for name in source_artifacts if name not in configured_names
+    )
+    if unexpected_source_names:
+        raise BuildError(
+            "unexpected source artifacts for unknown repositories: "
+            + ", ".join(unexpected_source_names)
+        )
     missing_names = [name for name in configured_names if not repository_artifacts.get(name)]
     if missing_names:
         raise BuildError(
@@ -1508,6 +1681,9 @@ def generate_split_site(
     )
     if not all_package_paths:
         raise BuildError("cannot generate site without package artifacts")
+    all_source_paths = dedupe_paths(
+        [path for name in repository_names for path in source_artifacts.get(name, [])]
+    )
 
     if clean_output and output_dir.exists():
         shutil.rmtree(output_dir)
@@ -1519,20 +1695,21 @@ def generate_split_site(
     aggregate_path = repository_path(path_prefix, ALL_REPOSITORY_NAME)
     aggregate_id = repository_id(path_prefix, ALL_REPOSITORY_NAME)
 
-    aggregate_package_infos = tuple(
-        generate_site_from_artifacts(
-            config,
-            all_package_paths,
-            output_dir / aggregate_path,
-            template_path=repository_template_path,
-            base_url=join_url(base_url, aggregate_path),
-            repository_name=aggregate_path,
-            repository_id=aggregate_id,
-            channel_name=channel_name,
-            is_aggregate=True,
-            signing_key=resolved_signing_key,
-        )
+    aggregate_package_infos_list, aggregate_source_infos_list = generate_site_from_artifacts(
+        config,
+        all_package_paths,
+        output_dir / aggregate_path,
+        template_path=repository_template_path,
+        base_url=join_url(base_url, aggregate_path),
+        repository_name=aggregate_path,
+        repository_id=aggregate_id,
+        channel_name=channel_name,
+        is_aggregate=True,
+        signing_key=resolved_signing_key,
+        source_paths=all_source_paths,
     )
+    aggregate_package_infos = tuple(aggregate_package_infos_list)
+    aggregate_source_infos = tuple(aggregate_source_infos_list)
 
     published_repositories = [
         PublishedRepository(
@@ -1546,26 +1723,28 @@ def generate_split_site(
             verify_all_packages=_dedupe_package_names(
                 _runtime_package_infos(aggregate_package_infos)
             ),
+            source_infos=aggregate_source_infos,
         )
     ]
 
     for repository_name in repository_names:
         repo_path = repository_path(path_prefix, repository_name)
         repo_id = repository_id(path_prefix, repository_name)
-        repo_package_infos = tuple(
-            generate_site_from_artifacts(
-                config,
-                repository_artifacts[repository_name],
-                output_dir / repo_path,
-                template_path=repository_template_path,
-                base_url=join_url(base_url, repo_path),
-                repository_name=repo_path,
-                repository_id=repo_id,
-                channel_name=channel_name,
-                is_aggregate=False,
-                signing_key=resolved_signing_key,
-            )
+        repo_package_infos_list, repo_source_infos_list = generate_site_from_artifacts(
+            config,
+            repository_artifacts[repository_name],
+            output_dir / repo_path,
+            template_path=repository_template_path,
+            base_url=join_url(base_url, repo_path),
+            repository_name=repo_path,
+            repository_id=repo_id,
+            channel_name=channel_name,
+            is_aggregate=False,
+            signing_key=resolved_signing_key,
+            source_paths=source_artifacts.get(repository_name, []),
         )
+        repo_package_infos = tuple(repo_package_infos_list)
+        repo_source_infos = tuple(repo_source_infos_list)
         published_repositories.append(
             PublishedRepository(
                 channel=channel_name,
@@ -1578,6 +1757,7 @@ def generate_split_site(
                 verify_all_packages=_dedupe_package_names(
                     _runtime_package_infos(repo_package_infos)
                 ),
+                source_infos=repo_source_infos,
             )
         )
 
@@ -1603,20 +1783,27 @@ def config_with_repositories(config: dict[str, Any], entries: list[dict[str, Any
 def collect_cached_artifacts(
     entries: list[dict[str, Any]],
     artifact_root: Path,
-) -> dict[str, list[Path]]:
+) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
     repository_artifacts: dict[str, list[Path]] = {}
+    repository_source_artifacts: dict[str, list[Path]] = {}
     for entry in entries:
         repo_dir = artifact_root / str(entry["name"])
         artifacts = dedupe_paths(sorted(repo_dir.glob("*.deb")))
         if artifacts:
             repository_artifacts[repo_dir.name] = artifacts
-    return repository_artifacts
+        sources: list[Path] = []
+        for pattern in SOURCE_ARTIFACT_PATTERNS:
+            sources.extend(sorted(repo_dir.glob(pattern)))
+        sources = dedupe_paths(sources)
+        if sources:
+            repository_source_artifacts[repo_dir.name] = sources
+    return repository_artifacts, repository_source_artifacts
 
 
 def download_release_artifacts(
     entry: dict[str, Any],
     artifact_root: Path,
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     require_gh()
     build = dict(entry["build"])
     output_dir = artifact_root / str(entry["name"])
@@ -1627,7 +1814,8 @@ def download_release_artifacts(
     github_repo = str(entry["github_repo"])
     commit_sha = resolve_ref_commit(github_repo, str(entry["ref"]))
     release_tag = release_tag_for_commit(commit_sha)
-    args = [
+
+    base_args = [
         "gh",
         "release",
         "download",
@@ -1637,20 +1825,42 @@ def download_release_artifacts(
         "--dir",
         str(output_dir),
     ]
+    binary_args = list(base_args)
     for pattern in build["artifact_globs"]:
-        args.extend(["--pattern", str(pattern)])
-    run(args, capture_output=True)
+        binary_args.extend(["--pattern", str(pattern)])
+    run(binary_args, capture_output=True)
 
-    artifacts: list[Path] = []
+    binaries: list[Path] = []
     for pattern in build["artifact_globs"]:
-        artifacts.extend(sorted(output_dir.glob(str(pattern))))
-    artifacts = dedupe_paths(artifacts)
-    if not artifacts:
+        binaries.extend(sorted(output_dir.glob(str(pattern))))
+    binaries = dedupe_paths(binaries)
+    if not binaries:
         raise BuildError(
             f"no release artifacts found for {entry['name']} in "
             f"{github_repo} release {release_tag} ({commit_sha})"
         )
-    return artifacts
+
+    source_args = list(base_args)
+    for pattern in SOURCE_ARTIFACT_PATTERNS:
+        source_args.extend(["--pattern", pattern])
+    try:
+        run(source_args, capture_output=True)
+    except BuildError as exc:
+        # Older port releases may not yet publish source artifacts. Treat
+        # "no source assets found" as soft-missing so the binary publish
+        # still succeeds; surface anything else.
+        if "no assets" not in str(exc).lower() and "no asset" not in str(exc).lower():
+            print(
+                f"warning: source artifact download failed for {entry['name']}: {exc}",
+                file=sys.stderr,
+            )
+
+    sources: list[Path] = []
+    for pattern in SOURCE_ARTIFACT_PATTERNS:
+        sources.extend(sorted(output_dir.glob(pattern)))
+    sources = dedupe_paths(sources)
+
+    return binaries, sources
 
 
 def download_repository_entries(
@@ -1659,13 +1869,14 @@ def download_repository_entries(
     artifact_root: Path,
     allow_failures: bool,
     channel_name: str,
-) -> tuple[dict[str, list[Path]], list[dict[str, Any]]]:
+) -> tuple[dict[str, list[Path]], dict[str, list[Path]], list[dict[str, Any]]]:
     repository_artifacts: dict[str, list[Path]] = {}
+    repository_source_artifacts: dict[str, list[Path]] = {}
     downloaded_entries: list[dict[str, Any]] = []
     for entry in entries:
         print(f"downloading {channel_name}/{entry['name']}", file=sys.stderr)
         try:
-            artifacts = download_release_artifacts(entry, artifact_root)
+            binaries, sources = download_release_artifacts(entry, artifact_root)
         except BuildError as exc:
             if not allow_failures:
                 raise
@@ -1674,14 +1885,18 @@ def download_repository_entries(
                 file=sys.stderr,
             )
             continue
-        repository_artifacts[str(entry["name"])] = artifacts
+        name = str(entry["name"])
+        repository_artifacts[name] = binaries
+        if sources:
+            repository_source_artifacts[name] = sources
         downloaded_entries.append(entry)
-        print(
-            f"downloaded {channel_name}/{entry['name']}: {len(artifacts)} artifact"
-            f"{'s' if len(artifacts) != 1 else ''}",
-            file=sys.stderr,
-        )
-    return repository_artifacts, downloaded_entries
+        binary_word = "binary" if len(binaries) == 1 else "binaries"
+        message = f"downloaded {channel_name}/{entry['name']}: {len(binaries)} {binary_word}"
+        if sources:
+            source_word = "artifact" if len(sources) == 1 else "artifacts"
+            message += f", {len(sources)} source {source_word}"
+        print(message, file=sys.stderr)
+    return repository_artifacts, repository_source_artifacts, downloaded_entries
 
 
 def parse_args() -> argparse.Namespace:
@@ -1757,8 +1972,10 @@ def main() -> int:
     testing_allow_failures = bool(testing_config.get("allow_build_failures", False))
 
     if args.skip_build:
-        stable_artifacts = collect_cached_artifacts(stable_entries, artifact_root)
-        testing_artifacts = collect_cached_artifacts(
+        stable_artifacts, stable_source_artifacts = collect_cached_artifacts(
+            stable_entries, artifact_root
+        )
+        testing_artifacts, testing_source_artifacts = collect_cached_artifacts(
             testing_entries,
             artifact_root / TESTING_CHANNEL_NAME,
         )
@@ -1766,13 +1983,17 @@ def main() -> int:
             entry for entry in testing_entries if str(entry["name"]) in testing_artifacts
         ]
     else:
-        stable_artifacts, _ = download_repository_entries(
+        stable_artifacts, stable_source_artifacts, _ = download_repository_entries(
             stable_entries,
             artifact_root=artifact_root,
             allow_failures=False,
             channel_name=STABLE_CHANNEL_NAME,
         )
-        testing_artifacts, downloaded_testing_entries = download_repository_entries(
+        (
+            testing_artifacts,
+            testing_source_artifacts,
+            downloaded_testing_entries,
+        ) = download_repository_entries(
             testing_entries,
             artifact_root=artifact_root / TESTING_CHANNEL_NAME,
             allow_failures=testing_allow_failures,
@@ -1787,6 +2008,7 @@ def main() -> int:
             repository_template_path=repository_template_path,
             landing_template_path=landing_template_path,
             base_url=base_url,
+            repository_source_artifacts=stable_source_artifacts,
         )
     else:
         if args.output.exists():
@@ -1807,6 +2029,7 @@ def main() -> int:
                 signing_key=signing_key,
                 clean_output=False,
                 render_landing=False,
+                repository_source_artifacts=stable_source_artifacts,
             )
         )
         if testing_artifacts:
@@ -1823,6 +2046,7 @@ def main() -> int:
                     signing_key=signing_key,
                     clean_output=False,
                     render_landing=False,
+                    repository_source_artifacts=testing_source_artifacts,
                 )
             )
         render_root_index(

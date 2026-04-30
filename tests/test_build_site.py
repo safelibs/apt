@@ -43,6 +43,69 @@ def completed(stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr=stderr)
 
 
+def make_source_set(
+    root: Path,
+    source: str,
+    upstream_version: str,
+    *,
+    debian_revision: str = "1+safelibs1",
+) -> tuple[Path, Path, Path]:
+    """Create a minimal .dsc + orig/debian tarballs for source-package tests."""
+
+    import hashlib
+    import tarfile
+
+    full_version = f"{upstream_version}-{debian_revision}" if debian_revision else upstream_version
+    orig_name = f"{source}_{upstream_version}.orig.tar.gz"
+    debian_name = f"{source}_{full_version}.debian.tar.xz"
+    dsc_name = f"{source}_{full_version}.dsc"
+    orig_path = root / orig_name
+    debian_path = root / debian_name
+    dsc_path = root / dsc_name
+
+    placeholder = root / f"{source}-placeholder.txt"
+    placeholder.write_text(source + "\n")
+    with tarfile.open(orig_path, "w:gz") as handle:
+        handle.add(placeholder, arcname=f"{source}-{upstream_version}/README")
+    with tarfile.open(debian_path, "w:xz") as handle:
+        handle.add(placeholder, arcname="debian/changelog")
+
+    def file_entry(path: Path) -> tuple[str, str, str, int]:
+        data = path.read_bytes()
+        return (
+            hashlib.md5(data).hexdigest(),
+            hashlib.sha1(data).hexdigest(),
+            hashlib.sha256(data).hexdigest(),
+            len(data),
+        )
+
+    orig_md5, orig_sha1, orig_sha256, orig_size = file_entry(orig_path)
+    debian_md5, debian_sha1, debian_sha256, debian_size = file_entry(debian_path)
+    dsc_path.write_text(
+        "\n".join(
+            [
+                "Format: 3.0 (quilt)",
+                f"Source: {source}",
+                f"Binary: {source}",
+                "Architecture: any",
+                f"Version: {full_version}",
+                "Maintainer: SafeLibs <test@safelibs.invalid>",
+                "Files:",
+                f" {orig_md5} {orig_size} {orig_name}",
+                f" {debian_md5} {debian_size} {debian_name}",
+                "Checksums-Sha1:",
+                f" {orig_sha1} {orig_size} {orig_name}",
+                f" {debian_sha1} {debian_size} {debian_name}",
+                "Checksums-Sha256:",
+                f" {orig_sha256} {orig_size} {orig_name}",
+                f" {debian_sha256} {debian_size} {debian_name}",
+                "",
+            ]
+        )
+    )
+    return dsc_path, orig_path, debian_path
+
+
 def archive_config() -> dict[str, str]:
     return {
         "suite": "noble",
@@ -667,10 +730,10 @@ class BuildSiteTests(unittest.TestCase):
                 self.assertEqual(args[:3], ["gh", "release", "download"])
                 self.assertIn("build-0123456789ab", args)
                 self.assertIn("--pattern", args)
-                self.assertIn("*.deb", args)
                 output_dir = Path(args[args.index("--dir") + 1])
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / artifact_name).write_text("deb")
+                if "*.deb" in args:
+                    (output_dir / artifact_name).write_text("deb")
                 return completed()
 
             with (
@@ -681,14 +744,19 @@ class BuildSiteTests(unittest.TestCase):
                 ) as resolve_mock,
                 mock.patch("tools.build_site.run", side_effect=fake_run) as run_mock,
             ):
-                artifacts = build_site.download_release_artifacts(
+                binaries, sources = build_site.download_release_artifacts(
                     repo_config("demo"),
                     artifact_root,
                 )
 
             resolve_mock.assert_called_once_with("safelibs/port-demo", "refs/tags/demo/04-test")
-            run_mock.assert_called_once()
-            self.assertEqual([path.name for path in artifacts], [artifact_name])
+            self.assertEqual(run_mock.call_count, 2)
+            binary_call, source_call = run_mock.call_args_list
+            self.assertIn("*.deb", binary_call.args[0])
+            self.assertIn("*.dsc", source_call.args[0])
+            self.assertIn("*.orig.tar.*", source_call.args[0])
+            self.assertEqual([path.name for path in binaries], [artifact_name])
+            self.assertEqual(sources, [])
             self.assertTrue((artifact_root / "demo" / artifact_name).exists())
 
     def test_download_release_artifacts_requires_downloaded_assets(self) -> None:
@@ -1222,7 +1290,7 @@ class BuildSiteTests(unittest.TestCase):
             template_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
             config = {"archive": archive_config()}
 
-            infos = build_site.generate_site_from_artifacts(
+            infos, source_infos = build_site.generate_site_from_artifacts(
                 config,
                 [deb_a, deb_b],
                 output_dir,
@@ -1231,6 +1299,7 @@ class BuildSiteTests(unittest.TestCase):
             )
 
             self.assertEqual([info.name for info in infos], ["libalpha1", "libbeta1"])
+            self.assertEqual(source_infos, [])
             self.assertTrue((output_dir / "index.html").exists())
             self.assertTrue((output_dir / "safelibs.asc").exists())
             self.assertTrue((output_dir / "safelibs.gpg").exists())
@@ -1742,11 +1811,14 @@ class BuildSiteTests(unittest.TestCase):
                 "repositories": [repo_config("alpha"), repo_config("beta")],
             }
             downloaded_artifacts = [
-                [workspace / "artifacts" / "alpha" / "alpha.deb"],
-                [
-                    workspace / "artifacts" / "beta" / "beta-a.deb",
-                    workspace / "artifacts" / "beta" / "beta-b.deb",
-                ],
+                ([workspace / "artifacts" / "alpha" / "alpha.deb"], []),
+                (
+                    [
+                        workspace / "artifacts" / "beta" / "beta-a.deb",
+                        workspace / "artifacts" / "beta" / "beta-b.deb",
+                    ],
+                    [],
+                ),
             ]
 
             with (
@@ -1783,6 +1855,134 @@ class BuildSiteTests(unittest.TestCase):
         self.assertEqual(
             generate_mock.call_args.kwargs["base_url"], "https://override.invalid/repo/"
         )
+
+
+    def test_parse_dsc_extracts_fields_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dsc_path, _, _ = make_source_set(Path(tmp), "libdemo", "1.0")
+            source, version, files = build_site.parse_dsc(dsc_path)
+
+        self.assertEqual(source, "libdemo")
+        self.assertEqual(version, "1.0-1+safelibs1")
+        self.assertEqual(
+            sorted(files),
+            sorted(
+                [
+                    "libdemo_1.0.orig.tar.gz",
+                    "libdemo_1.0-1+safelibs1.debian.tar.xz",
+                ]
+            ),
+        )
+
+    def test_stage_source_packages_co_locates_referenced_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            dsc_path, orig_path, debian_path = make_source_set(tmp_path, "libdemo", "1.0")
+            site_root = tmp_path / "site"
+            site_root.mkdir()
+
+            infos = build_site.stage_source_packages(
+                site_root,
+                "main",
+                [dsc_path, orig_path, debian_path],
+            )
+
+            self.assertEqual(len(infos), 1)
+            info = infos[0]
+            self.assertEqual(info.source, "libdemo")
+            self.assertEqual(info.pool_path, Path("pool/main/l/libdemo") / dsc_path.name)
+            for file_path in info.files:
+                self.assertTrue(file_path.exists())
+            self.assertTrue((site_root / "pool/main/l/libdemo" / orig_path.name).exists())
+            self.assertTrue((site_root / "pool/main/l/libdemo" / debian_path.name).exists())
+
+    def test_stage_source_packages_rejects_missing_referenced_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            dsc_path, orig_path, _ = make_source_set(tmp_path, "libdemo", "1.0")
+            site_root = tmp_path / "site"
+            site_root.mkdir()
+
+            with self.assertRaisesRegex(build_site.BuildError, r"references .*\.debian\.tar\.xz"):
+                build_site.stage_source_packages(
+                    site_root,
+                    "main",
+                    [dsc_path, orig_path],
+                )
+
+    def test_generate_site_from_artifacts_publishes_source_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb = make_deb(tmp_path, "libdemo1", "1.0+safelibs1")
+            dsc_path, orig_path, debian_path = make_source_set(tmp_path, "libdemo", "1.0")
+            output_dir = tmp_path / "site"
+            template_path = Path(__file__).resolve().parent.parent / "templates" / "index.html"
+            config = {"archive": archive_config()}
+
+            infos, source_infos = build_site.generate_site_from_artifacts(
+                config,
+                [deb],
+                output_dir,
+                template_path=template_path,
+                base_url="https://example.invalid/repo/",
+                source_paths=[dsc_path, orig_path, debian_path],
+            )
+
+            self.assertEqual([info.name for info in infos], ["libdemo1"])
+            self.assertEqual([info.source for info in source_infos], ["libdemo"])
+            sources_index = output_dir / "dists/noble/main/source/Sources"
+            self.assertTrue(sources_index.exists())
+            self.assertTrue((output_dir / "dists/noble/main/source/Sources.gz").exists())
+            sources_text = sources_index.read_text()
+            self.assertIn("Package: libdemo", sources_text)
+            self.assertIn("Format: 3.0 (quilt)", sources_text)
+            release_text = (output_dir / "dists/noble/Release").read_text()
+            self.assertIn("source", release_text.split("Architectures:", 1)[1].splitlines()[0])
+            self.assertIn("main/source/Sources", release_text)
+            self.assertTrue(
+                (output_dir / "pool/main/l/libdemo" / dsc_path.name).exists()
+            )
+
+    def test_generate_split_site_includes_source_packages_in_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            deb = make_deb(tmp_path, "libalpha1", "1.0+safelibs1")
+            dsc_path, orig_path, debian_path = make_source_set(tmp_path, "libalpha", "1.0")
+            output_dir = tmp_path / "site"
+            template_root = Path(__file__).resolve().parent.parent / "templates"
+            config = {
+                "archive": archive_config(),
+                "repositories": [repo_config("alpha")],
+            }
+
+            published = build_site.generate_split_site(
+                config,
+                {"alpha": [deb]},
+                output_dir,
+                repository_template_path=template_root / "index.html",
+                landing_template_path=template_root / "landing.html",
+                base_url="https://example.invalid/apt/",
+                repository_source_artifacts={"alpha": [dsc_path, orig_path, debian_path]},
+            )
+
+            sources = {repo.name: [info.source for info in repo.source_infos] for repo in published}
+            self.assertEqual(sources, {"all": ["libalpha"], "alpha": ["libalpha"]})
+            self.assertTrue(
+                (output_dir / "all/dists/noble/main/source/Sources").exists()
+            )
+            self.assertTrue(
+                (output_dir / "alpha/dists/noble/main/source/Sources").exists()
+            )
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            stable = manifest["channels"][0]
+            paths_to_sources = {
+                repo["path"]: [entry["source"] for entry in repo.get("source_packages", [])]
+                for repo in stable["repositories"]
+            }
+            self.assertEqual(
+                paths_to_sources,
+                {"all": ["libalpha"], "alpha": ["libalpha"]},
+            )
 
 
 if __name__ == "__main__":

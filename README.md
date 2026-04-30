@@ -52,10 +52,13 @@ entirely from the validator — no port list lives in `repositories.yml`.
 
 Package builds happen in the individual `safelibs/port-*` repositories. Each
 port's hand-maintained `ci-release` workflow publishes a GitHub release named
-`build-<12-char-sha>` for each pushed commit. During site generation,
+`build-<12-char-sha>` for each pushed commit, attaching both the binary `.deb`
+artifacts and the Debian source artifacts (`.dsc`, `*.orig.tar.*`,
+`*.debian.tar.*`) produced by `dpkg-buildpackage`. During site generation,
 `tools/build_site.py` resolves each configured tag or branch ref to a commit,
-derives the matching release tag from that commit SHA, downloads the `.deb`
-assets, and then publishes the signed apt indexes.
+derives the matching release tag from that commit SHA, downloads both the
+binary and source assets, and publishes signed apt binary and source
+indexes.
 
 The generated site now publishes:
 
@@ -69,6 +72,13 @@ The generated site now publishes:
 - `/`: a landing page that links to the split repositories; installs should use
   `/all/`, a library-specific subdirectory, `/testing/all/`, or a testing
   library-specific subdirectory
+
+Each repository also publishes a Debian source index alongside its binary
+indexes whenever the upstream port releases include source artifacts. The
+generated `Sources` and `Sources.gz` files live under
+`dists/<suite>/<component>/source/`, and `source` is added to the `Release`
+file's `Architectures:` line so `apt-get source <pkg>` works against any of
+the published apt URLs.
 
 ## Local Usage
 
@@ -125,6 +135,14 @@ sudo install -d -m 0755 /etc/apt/keyrings /etc/apt/preferences.d
 curl -fsSL https://safelibs.org/apt/all/safelibs.gpg | sudo tee /etc/apt/keyrings/safelibs.gpg > /dev/null
 curl -fsSL https://safelibs.org/apt/all/safelibs-all.pref | sudo tee /etc/apt/preferences.d/safelibs-all.pref > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/safelibs.gpg] https://safelibs.org/apt/all noble main" | sudo tee /etc/apt/sources.list.d/safelibs-all.list > /dev/null
+sudo apt-get update
+```
+
+To also pull source packages with `apt-get source`, append a matching
+`deb-src` line to the same source list:
+
+```bash
+echo "deb-src [signed-by=/etc/apt/keyrings/safelibs.gpg] https://safelibs.org/apt/all noble main" | sudo tee -a /etc/apt/sources.list.d/safelibs-all.list > /dev/null
 sudo apt-get update
 ```
 
