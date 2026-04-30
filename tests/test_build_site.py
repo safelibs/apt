@@ -754,7 +754,7 @@ class BuildSiteTests(unittest.TestCase):
             binary_call, source_call = run_mock.call_args_list
             self.assertIn("*.deb", binary_call.args[0])
             self.assertIn("*.dsc", source_call.args[0])
-            self.assertIn("*.orig.tar.*", source_call.args[0])
+            self.assertIn("*.tar.xz", source_call.args[0])
             self.assertEqual([path.name for path in binaries], [artifact_name])
             self.assertEqual(sources, [])
             self.assertTrue((artifact_root / "demo" / artifact_name).exists())

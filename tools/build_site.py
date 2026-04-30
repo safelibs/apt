@@ -43,7 +43,7 @@ RUNTIME_PACKAGE_SUFFIX_EXCLUDES = (
     "-ocaml",
 )
 RUNTIME_PACKAGE_PREFIX_EXCLUDES = ("gir1.2-", "python3-")
-SOURCE_ARTIFACT_PATTERNS = ("*.dsc", "*.orig.tar.*", "*.debian.tar.*")
+SOURCE_ARTIFACT_PATTERNS = ("*.dsc", "*.tar.gz", "*.tar.xz", "*.tar.bz2", "*.tar.zst")
 SOURCE_DSC_SUFFIX = ".dsc"
 
 
@@ -947,13 +947,6 @@ def stage_packages(site_root: Path, component: str, package_paths: list[Path]) -
             )
         )
     return infos
-
-
-def is_source_artifact(path: Path) -> bool:
-    name = path.name
-    if name.endswith(SOURCE_DSC_SUFFIX):
-        return True
-    return ".orig.tar." in name or ".debian.tar." in name
 
 
 def parse_dsc(dsc_path: Path) -> tuple[str, str, list[str]]:
