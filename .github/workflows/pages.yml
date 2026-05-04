@@ -17,7 +17,7 @@ jobs:
     outputs:
       repo_specs: ${{ steps.matrix.outputs.repos }}
     env:
-      GH_TOKEN: ${{ secrets.SAFELIBS_REPO_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       SAFEAPTREPO_GPG_PRIVATE_KEY: ${{ secrets.SAFEAPTREPO_GPG_PRIVATE_KEY }}
       SAFEAPTREPO_GPG_PASSPHRASE: ${{ secrets.SAFEAPTREPO_GPG_PASSPHRASE }}
       SAFEDEBREPO_GPG_PRIVATE_KEY: ${{ secrets.SAFEDEBREPO_GPG_PRIVATE_KEY }}
@@ -28,18 +28,8 @@ jobs:
 
       - name: Validate deployment secrets
         run: |
-          missing=0
-          if test -z "${GH_TOKEN}"; then
-            echo "Missing required repository secret: SAFELIBS_REPO_TOKEN" >&2
-            missing=1
-          fi
-
           if test -z "${SAFEAPTREPO_GPG_PRIVATE_KEY:-${SAFEDEBREPO_GPG_PRIVATE_KEY:-}}"; then
             echo "Missing required repository secret: SAFEAPTREPO_GPG_PRIVATE_KEY (or legacy SAFEDEBREPO_GPG_PRIVATE_KEY)" >&2
-            missing=1
-          fi
-
-          if test "${missing}" -ne 0; then
             exit 1
           fi
 

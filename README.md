@@ -203,14 +203,12 @@ still accepted during the rename.
 
 ## CI Notes
 
-The `ci` workflow always runs unit tests. Its full site build plus Docker
-verification run only when `SAFELIBS_REPO_TOKEN` is configured with read access
-to the private `safelibs/port-*` repos.
+The `ci` workflow runs unit tests, builds the full site, and runs Docker
+verification on every push and PR. The `safelibs/port-*` repos are public, so
+both workflows authenticate with the auto-provisioned `GITHUB_TOKEN`.
 
-The `pages` workflow only builds and deploys when both of the following are
-available:
+The `pages` workflow builds and deploys whenever a signing key is available:
 
-- `SAFELIBS_REPO_TOKEN`
 - `SAFEAPTREPO_GPG_PRIVATE_KEY`, or the legacy
   `SAFEDEBREPO_GPG_PRIVATE_KEY` while the rename is in flight
 
