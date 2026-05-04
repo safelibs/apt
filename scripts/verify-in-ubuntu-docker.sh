@@ -13,6 +13,7 @@ $(python3 - "$CONFIG_PATH" "$REPOSITORY_NAME" "$REPOSITORY_PATH" "${REPO_TARGET}
 import json
 from pathlib import Path
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 import yaml
@@ -24,13 +25,30 @@ repository_path = sys.argv[3]
 repo_target = sys.argv[4]
 
 
+def fetch_url_with_retry(url: str, attempts: int = 6, delay: float = 5.0) -> bytes | None:
+    for attempt in range(attempts):
+        try:
+            with urlopen(url) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code != 404 or attempt == attempts - 1:
+                return None
+        except Exception:
+            if attempt == attempts - 1:
+                return None
+        time.sleep(delay)
+    return None
+
+
 def load_manifest_entry(target: str, name: str, path: str):
     if target.startswith(("http://", "https://")):
         url = f"{target.rstrip('/')}/manifest.json"
+        body = fetch_url_with_retry(url)
+        if body is None:
+            return None
         try:
-            with urlopen(url) as response:
-                manifest = json.loads(response.read().decode())
-        except Exception:
+            manifest = json.loads(body.decode())
+        except json.JSONDecodeError:
             return None
     else:
         manifest_path = Path(target) / "manifest.json"
@@ -143,6 +161,7 @@ derive_index_packages_csv() {
   python3 - "$repo_mode" "${repo_dir:-}" "$repo_uri" "$suite" "$component" <<'PY'
 import gzip
 from pathlib import Path
+import time
 from urllib.error import HTTPError
 from urllib.request import urlopen
 import sys
@@ -179,14 +198,21 @@ if mode == "local":
             packages_texts.append(packages_path.read_text())
 elif mode == "remote":
     base_url = sys.argv[3].rstrip("/")
+    attempts = 6
+    delay = 5.0
     for packages_rel in packages_rels:
         packages_url = f"{base_url}/{packages_rel}.gz"
-        try:
-            with urlopen(packages_url) as response:
-                packages_texts.append(gzip.decompress(response.read()).decode())
-        except HTTPError as exc:
-            if exc.code != 404:
-                raise
+        for attempt in range(attempts):
+            try:
+                with urlopen(packages_url) as response:
+                    packages_texts.append(gzip.decompress(response.read()).decode())
+                break
+            except HTTPError as exc:
+                if exc.code != 404:
+                    raise
+                if attempt == attempts - 1:
+                    break
+                time.sleep(delay)
 else:
     raise SystemExit(f"unsupported verify mode: {mode}")
 
